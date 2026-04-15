@@ -1,0 +1,21 @@
+{
+  "name": "@assem/orchestrator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@assem/action-log": "0.1.0",
+    "@assem/integration-local-files": "0.1.0",
+    "@assem/memory": "0.1.0",
+    "@assem/model-router": "0.1.0",
+    "@assem/policy-engine": "0.1.0",
+    "@assem/shared-types": "0.1.0",
+    "@assem/tool-registry": "0.1.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@assem/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run dev:web",
+    "dev:web": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "npm run build:web",
+    "build:web": "vite build",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:info": "tauri info"
+  },
+  "dependencies": {
+    "@assem/sdk": "0.1.0",
+    "@assem/shared-types": "0.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}

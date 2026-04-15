@@ -1,0 +1,15 @@
+{
+  "name": "@assem/integration-local-files",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@assem/shared-types": "0.1.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

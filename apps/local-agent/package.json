@@ -1,0 +1,28 @@
+{
+  "name": "@assem/local-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@assem/action-log": "0.1.0",
+    "@assem/config": "0.1.0",
+    "@assem/integration-calendar": "0.1.0",
+    "@assem/integration-clock-time": "0.1.0",
+    "@assem/integration-local-files": "0.1.0",
+    "@assem/memory": "0.1.0",
+    "@assem/model-router": "0.1.0",
+    "@assem/orchestrator": "0.1.0",
+    "@assem/persistence": "0.1.0",
+    "@assem/policy-engine": "0.1.0",
+    "@assem/provider-demo-local": "0.1.0",
+    "@assem/provider-ollama": "0.1.0",
+    "@assem/scheduler": "0.1.0",
+    "@assem/shared-types": "0.1.0",
+    "@assem/telemetry": "0.1.0",
+    "@assem/tool-registry": "0.1.0"
+  }
+}

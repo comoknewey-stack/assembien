@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.vite/
+coverage/
+*.log
+.env
+sandbox/
+.assem-data/
+.assem-runtime/
+**/src-tauri/target/
+**/src-tauri/gen/
