@@ -6,6 +6,7 @@ function clone<T>(value: T): T {
 }
 
 const FILE_REPLACE_RETRY_DELAYS_MS = [20, 50, 100, 200];
+const STALE_TMP_FILE_MAX_AGE_MS = 15 * 60 * 1000;
 
 async function ensureParentDirectory(filePath: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -64,6 +65,49 @@ async function replaceFileWithRetries(
   throw lastError;
 }
 
+function isSiblingTemporaryFile(fileName: string, baseFileName: string): boolean {
+  return fileName.startsWith(`${baseFileName}.`) && fileName.endsWith('.tmp');
+}
+
+export async function cleanupStaleJsonTempFiles(
+  filePath: string,
+  maxAgeMs = STALE_TMP_FILE_MAX_AGE_MS
+): Promise<void> {
+  const directoryPath = path.dirname(filePath);
+  const baseFileName = path.basename(filePath);
+
+  try {
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+    const now = Date.now();
+
+    await Promise.all(
+      entries.map(async (entry) => {
+        if (!entry.isFile() || !isSiblingTemporaryFile(entry.name, baseFileName)) {
+          return;
+        }
+
+        const entryPath = path.join(directoryPath, entry.name);
+        try {
+          const stats = await fs.stat(entryPath);
+          if (now - stats.mtimeMs < maxAgeMs) {
+            return;
+          }
+
+          await fs.rm(entryPath, { force: true });
+        } catch {
+          return;
+        }
+      })
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return;
+    }
+
+    throw error;
+  }
+}
+
 export class JsonFileStore<T> {
   private cache: T | null = null;
   private operationQueue: Promise<unknown> = Promise.resolve();
@@ -93,6 +137,8 @@ export class JsonFileStore<T> {
   }
 
   private async readInternal(): Promise<T> {
+    await cleanupStaleJsonTempFiles(this.filePath);
+
     if (this.cache) {
       return clone(this.cache);
     }
@@ -115,6 +161,7 @@ export class JsonFileStore<T> {
   private async writeInternal(value: T): Promise<void> {
     this.cache = clone(value);
     await ensureParentDirectory(this.filePath);
+    await cleanupStaleJsonTempFiles(this.filePath);
 
     const temporaryPath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random()
       .toString(16)

@@ -1,6 +1,12 @@
-import type { SpeechToTextAudioInput } from '@assem/shared-types';
+import type {
+  SpeechToTextAudioInput,
+  VoiceAudioDiagnostics
+} from '@assem/shared-types';
 
 const TARGET_SAMPLE_RATE_HZ = 16_000;
+const MIN_CAPTURE_DURATION_MS = 250;
+const SILENCE_PEAK_THRESHOLD = 0.015;
+const SILENCE_RMS_THRESHOLD = 0.0035;
 
 interface ActiveBrowserRecording {
   stream: MediaStream;
@@ -22,6 +28,48 @@ function concatenateFloat32Chunks(chunks: Float32Array[]): Float32Array {
   }
 
   return merged;
+}
+
+export function analyzeMonoPcmCapture(
+  samples: Float32Array,
+  sampleRate = TARGET_SAMPLE_RATE_HZ,
+  captureSampleRateHz = sampleRate
+): VoiceAudioDiagnostics {
+  let peakLevel = 0;
+  let squareSum = 0;
+
+  for (const sample of samples) {
+    const amplitude = Math.abs(sample);
+    peakLevel = Math.max(peakLevel, amplitude);
+    squareSum += sample * sample;
+  }
+
+  const rmsLevel =
+    samples.length > 0 ? Math.sqrt(squareSum / samples.length) : 0;
+  const approximateDurationMs =
+    sampleRate > 0 ? Math.round((samples.length / sampleRate) * 1_000) : 0;
+  const silenceDetected =
+    peakLevel <= SILENCE_PEAK_THRESHOLD && rmsLevel <= SILENCE_RMS_THRESHOLD;
+  const suspicious =
+    samples.length === 0 ||
+    approximateDurationMs < MIN_CAPTURE_DURATION_MS ||
+    silenceDetected;
+
+  return {
+    mimeType: 'audio/wav',
+    byteLength: 44 + samples.length * 2,
+    captureSampleRateHz,
+    sampleRateHz: sampleRate,
+    channelCount: 1,
+    bitDepth: 16,
+    sampleCount: samples.length,
+    approximateDurationMs,
+    peakLevel: Number(peakLevel.toFixed(5)),
+    rmsLevel: Number(rmsLevel.toFixed(5)),
+    wavValid: true,
+    silenceDetected,
+    suspicious
+  };
 }
 
 export function downsampleMonoPcm(
@@ -166,18 +214,31 @@ export class BrowserVoiceRecorder {
 
     try {
       const pcm = concatenateFloat32Chunks(activeRecording.chunks);
+      if (pcm.length === 0) {
+        throw new Error('La grabacion no contiene audio util del microfono.');
+      }
+
       const downsampled = downsampleMonoPcm(
         pcm,
         activeRecording.audioContext.sampleRate,
         TARGET_SAMPLE_RATE_HZ
       );
       const wavBuffer = encodePcm16Wav(downsampled, TARGET_SAMPLE_RATE_HZ);
+      const diagnostics = analyzeMonoPcmCapture(
+        downsampled,
+        TARGET_SAMPLE_RATE_HZ,
+        activeRecording.audioContext.sampleRate
+      );
 
       return {
         mimeType: 'audio/wav',
         fileName: 'assem-recording.wav',
         base64Data: arrayBufferToBase64(wavBuffer),
-        durationMs: Date.now() - activeRecording.startedAt
+        durationMs: Date.now() - activeRecording.startedAt,
+        diagnostics: {
+          ...diagnostics,
+          byteLength: wavBuffer.byteLength
+        }
       };
     } finally {
       await this.disposeActiveRecording(activeRecording);

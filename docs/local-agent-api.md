@@ -85,10 +85,39 @@ Base URL: `http://localhost:4318`
     "mimeType": "audio/wav",
     "fileName": "assem-recording.wav",
     "base64Data": "<base64-audio>",
-    "durationMs": 1250
+    "durationMs": 1250,
+    "diagnostics": {
+      "byteLength": 32044,
+      "sampleRateHz": 16000,
+      "channelCount": 1,
+      "bitDepth": 16,
+      "approximateDurationMs": 1000,
+      "peakLevel": 0.42,
+      "rmsLevel": 0.18
+    }
   }
 }
 ```
+
+Runtime note:
+
+- the uploaded audio payload is handled locally by the agent
+- during `whisper.cpp` transcription the agent writes a temporary file under `ASSEM_DATA_ROOT/voice-temp/session-*`
+- after reading the generated JSON output, the agent removes that temporary folder on success
+- the same temporary folder is also removed on failure through `finally`
+- if `ASSEM_VOICE_DEBUG=true`, that temporary folder is kept so you can inspect `input.wav` and `transcript.json`
+- the current STT diagnostic now distinguishes:
+  - audio payload missing
+  - audio decode failure
+  - invalid WAV
+  - audio too short
+  - near-silent audio
+  - transcript JSON missing
+  - transcript JSON empty
+  - transcript too short
+  - likely language mismatch
+- provider health for `whisper-cpp` now includes a small real self-check before it reports itself ready
+- the active runtime does not register the old Windows STT provider anymore; `windows-system-stt` remains legacy-only code
 
 `POST /api/voice/speak` example:
 

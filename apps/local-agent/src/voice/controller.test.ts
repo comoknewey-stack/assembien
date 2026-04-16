@@ -36,6 +36,7 @@ function createConfig(overrides: Partial<AssemConfig> = {}): AssemConfig {
     voiceTtsProviderId: 'fake-tts',
     voiceLanguage: 'es-ES',
     voiceAutoReadResponses: false,
+    voiceDebugArtifacts: false,
     whisperCppCliPath: undefined,
     whisperCppModelPath: undefined,
     whisperCppThreads: 4,
@@ -297,7 +298,7 @@ describe('VoiceCoordinator', () => {
     expect(state.voice.settings.preferredLanguage).toBe('en-US');
   });
 
-  it('migrates persisted legacy STT settings to the available configured provider', async () => {
+  it('isolates legacy Windows STT settings and migrates them to the active configured provider', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'assem-voice-migrate-'));
     const settingsFilePath = path.join(tempRoot, 'voice-settings.json');
     await fs.writeFile(
@@ -331,6 +332,7 @@ describe('VoiceCoordinator', () => {
     };
 
     expect(state.voice.settings.sttProviderId).toBe('fake-stt');
+    expect(state.voice.sttProviders.some((provider) => provider.providerId === 'windows-system-stt')).toBe(false);
     expect(persisted.settings.sttProviderId).toBe('fake-stt');
   });
 
@@ -418,6 +420,70 @@ describe('VoiceCoordinator', () => {
     const state = await harness.coordinator.getState('session-2');
     expect(state.voice.session?.recordingState).toBe('error');
     expect(state.voice.session?.lastError).toContain('Mic failed');
+  });
+
+  it('preserves the provider diagnostic when transcription returns no useful text', async () => {
+    const diagnosticStt = new FakeSpeechToTextProvider(
+      'fake-stt',
+      'Fake STT',
+      {
+        status: 'ok',
+        checkedAt: new Date().toISOString(),
+        configured: true,
+        available: true
+      },
+      async () => ({
+        transcript: '',
+        audioDurationMs: 220,
+        effectiveLanguage: 'es',
+        audioDiagnostics: {
+          byteLength: 5_120,
+          sampleRateHz: 16_000,
+          channelCount: 1,
+          bitDepth: 16,
+          approximateDurationMs: 220,
+          peakLevel: 0.34,
+          rmsLevel: 0.12,
+          wavValid: true,
+          silenceDetected: false,
+          suspicious: true
+        },
+        diagnostic: {
+          code: 'audio_too_short',
+          summary: 'La grabacion es demasiado corta para Whisper (220 ms).',
+          effectiveLanguage: 'es',
+          audio: {
+            byteLength: 5_120,
+            sampleRateHz: 16_000,
+            channelCount: 1,
+            bitDepth: 16,
+            approximateDurationMs: 220,
+            peakLevel: 0.34,
+            rmsLevel: 0.12,
+            wavValid: true,
+            silenceDetected: false,
+            suspicious: true
+          }
+        }
+      })
+    );
+    const harness = await createCoordinator({
+      sttProviders: [diagnosticStt]
+    });
+    cleanups.push(harness.cleanup);
+
+    await harness.coordinator.startRecording({ sessionId: 'session-diagnostic' });
+    const response = await harness.coordinator.stopRecording({
+      sessionId: 'session-diagnostic'
+    });
+    const state = await harness.coordinator.getState('session-diagnostic');
+
+    expect(response.transcript).toBe('');
+    expect(state.voice.session?.recordingState).toBe('error');
+    expect(state.voice.session?.lastError).toContain('demasiado corta');
+    expect(state.voice.session?.lastDiagnostic?.code).toBe('audio_too_short');
+    expect(state.voice.session?.lastTranscriptionLanguage).toBe('es');
+    expect(state.voice.session?.lastAudioDiagnostics?.approximateDurationMs).toBe(220);
   });
 
   it('degrades cleanly when the selected STT provider is unavailable', async () => {

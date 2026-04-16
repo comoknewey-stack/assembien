@@ -23,8 +23,10 @@
     "build": "npm run typecheck && npm run build --workspace @assem/local-agent && npm run build --workspace @assem/desktop",
     "build:desktop": "npm run tauri:build --workspace @assem/desktop",
     "doctor:desktop": "npm run tauri:info --workspace @assem/desktop",
+    "doctor:voice": "tsx scripts/doctor-voice.ts",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.browser.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "voice:bootstrap": "tsx scripts/bootstrap-whisper-runtime.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.17",

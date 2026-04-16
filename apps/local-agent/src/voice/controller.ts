@@ -89,7 +89,22 @@ function cloneVoiceSessionState(
   }
 
   return {
-    ...state
+    ...state,
+    lastDiagnostic: state.lastDiagnostic
+      ? {
+          ...state.lastDiagnostic,
+          audio: state.lastDiagnostic.audio
+            ? {
+                ...state.lastDiagnostic.audio
+              }
+            : undefined
+        }
+      : undefined,
+    lastAudioDiagnostics: state.lastAudioDiagnostics
+      ? {
+          ...state.lastAudioDiagnostics
+        }
+      : undefined
   };
 }
 
@@ -98,6 +113,21 @@ function sanitizeErrorMessage(message: string): string {
     .replace(/\r?\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function resolveTranscriptionFailureMessage(
+  transcript: string,
+  diagnosticSummary?: string
+): string {
+  if (diagnosticSummary?.trim()) {
+    return diagnosticSummary.trim();
+  }
+
+  if (!transcript.trim()) {
+    return 'No se ha detectado un transcript util. Prueba a repetir la grabacion.';
+  }
+
+  return 'La transcripcion de voz ha fallado.';
 }
 
 function createVoiceSessionState(
@@ -206,6 +236,14 @@ export class VoiceCoordinator {
       });
     }
 
+    for (const provider of this.sttProviders.values()) {
+      await provider.initialize?.();
+    }
+
+    for (const provider of this.ttsProviders.values()) {
+      await provider.initialize?.();
+    }
+
     await this.refreshProviderHealth(true);
   }
 
@@ -298,6 +336,7 @@ export class VoiceCoordinator {
 
       sessionState.recordingState = 'recording';
       sessionState.lastError = undefined;
+      sessionState.lastDiagnostic = undefined;
       sessionState.recordingStartedAt = this.activeRecording.startedAt;
       sessionState.microphoneAccessible = true;
       sessionState.sttProviderId = provider.id;
@@ -364,8 +403,13 @@ export class VoiceCoordinator {
       if (!transcript) {
         sessionState.recordingState = 'error';
         sessionState.audioDurationMs = result.audioDurationMs;
-        sessionState.lastError =
-          'No se ha detectado un transcript util. Prueba a repetir la grabacion.';
+        sessionState.lastTranscriptionLanguage = result.effectiveLanguage;
+        sessionState.lastAudioDiagnostics = result.audioDiagnostics;
+        sessionState.lastDiagnostic = result.diagnostic;
+        sessionState.lastError = resolveTranscriptionFailureMessage(
+          transcript,
+          result.diagnostic?.summary
+        );
         sessionState.updatedAt = nowIso();
         await this.persistSessionState(sessionState);
 
@@ -399,6 +443,9 @@ export class VoiceCoordinator {
       sessionState.recordingState = 'idle';
       sessionState.lastTranscript = transcript;
       sessionState.audioDurationMs = result.audioDurationMs;
+      sessionState.lastAudioDiagnostics = result.audioDiagnostics;
+      sessionState.lastTranscriptionLanguage = result.effectiveLanguage;
+      sessionState.lastDiagnostic = result.diagnostic;
       sessionState.lastError = undefined;
       sessionState.lastAssistantMessage = getLastAssistantMessage(snapshot ?? null) ?? undefined;
       sessionState.updatedAt = nowIso();
@@ -463,6 +510,7 @@ export class VoiceCoordinator {
     const sessionState = this.resolveSessionState(request.sessionId);
     sessionState.recordingState = 'idle';
     sessionState.lastError = undefined;
+    sessionState.lastDiagnostic = undefined;
     sessionState.updatedAt = nowIso();
     await this.persistSessionState(sessionState);
     await this.notifyStateChanged();

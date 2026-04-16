@@ -158,6 +158,7 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
         voiceTtsProviderId: 'windows-system-tts',
         voiceLanguage: 'es-ES',
         voiceAutoReadResponses: false,
+        voiceDebugArtifacts: false,
         whisperCppCliPath: undefined,
         whisperCppModelPath: undefined,
         whisperCppThreads: 4,
@@ -205,6 +206,20 @@ describe('AssemOrchestrator', () => {
     expect(getLastTemporalSnapshot(snapshot)).toMatchObject({
       iso: FIXED_NOW.toISOString()
     });
+  });
+
+  it('forces the clock tool for "que dia es y que hora es"', async () => {
+    const { orchestrator, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que dia es y que hora es'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Son las');
+    expect(getLastAssistantMessage(snapshot)).toContain('martes');
+    expect(countTelemetryToolUses(telemetry, 'clock-time.get-current')).toBe(1);
+    expect(snapshot.lastModelInvocation).toBeUndefined();
   });
 
   it('reformulates the same temporal snapshot in Spanish after "en espanol"', async () => {
@@ -347,6 +362,80 @@ describe('AssemOrchestrator', () => {
     expect(countTelemetryToolUses(telemetry, 'clock-time.get-current')).toBe(1);
   });
 
+  it('reuses the current temporal snapshot when the user says "eso esta mal"', async () => {
+    const { orchestrator, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const initial = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que hora es'
+    });
+    const initialMessage = getLastAssistantMessage(initial);
+    const initialTemporalSnapshot = {
+      ...getLastTemporalSnapshot(initial)!
+    };
+    const correction = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'eso esta mal'
+    });
+
+    expect(getLastAssistantMessage(correction)).toContain(
+      'Estoy revisando el mismo dato temporal que acabo de usar'
+    );
+    expectSameTemporalValue(getLastTemporalSnapshot(correction), initialTemporalSnapshot);
+    expect(extractClockTime(getLastAssistantMessage(correction))).toBe(
+      extractClockTime(initialMessage)
+    );
+    expect(countTelemetryToolUses(telemetry, 'clock-time.get-current')).toBe(1);
+  });
+
+  it('answers capability questions from real system state instead of scaffold text', async () => {
+    const { orchestrator } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que herramientas y providers tienes'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain(
+      'ASSEM se esta ejecutando en modo'
+    );
+    expect(getLastAssistantMessage(snapshot)).toContain(
+      'Proveedor configurado por defecto: demo-local'
+    );
+    expect(getLastAssistantMessage(snapshot)).toContain('hora y fecha actuales');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('local scaffold mode');
+  });
+
+  it('keeps greetings in Spanish for a Spanish session', async () => {
+    const { orchestrator } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'Hola'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Hola.');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('Hello');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('local scaffold mode');
+  });
+
+  it('asks for clarification instead of inventing an answer for ambiguous requests', async () => {
+    const { orchestrator } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'dame la obra que tienes'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('No tengo claro');
+    expect(getLastAssistantMessage(snapshot)).toContain('"obra"');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('local scaffold mode');
+  });
+
   it.each([
     {
       text: 'Create a file called roadmap in the sandbox',
@@ -382,6 +471,20 @@ describe('AssemOrchestrator', () => {
         kind: 'directory',
         relativePath: 'proyectos'
       }
+    },
+    {
+      text: 'crea un archivo que se llame Gayeta',
+      expected: {
+        kind: 'file',
+        relativePath: 'Gayeta.txt'
+      }
+    },
+    {
+      text: 'puedes crear un archivo.txt en la carpeta donde estes ahora mismo donde lo puedas crear que se llame Gayeta',
+      expected: {
+        kind: 'file',
+        relativePath: 'Gayeta.txt'
+      }
     }
   ])('extracts local-file arguments for "$text"', async ({ text, expected }) => {
     const { orchestrator } = await createOrchestrator();
@@ -394,6 +497,22 @@ describe('AssemOrchestrator', () => {
     expect(snapshot.pendingAction?.toolId).toBe('local-files.create-entry');
     expect(snapshot.pendingAction?.input).toEqual(expected);
     expect(snapshot.messages.at(-1)?.content).toContain('Esperando confirmacion');
+  });
+
+  it('asks for clarification instead of inventing a file name when none is provided', async () => {
+    const { orchestrator } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'crea un archivo'
+    });
+
+    expect(snapshot.pendingAction).toBeNull();
+    expect(snapshot.messages.at(-1)?.content).toContain(
+      'Necesito el nombre del archivo para prepararlo.'
+    );
+    expect(snapshot.messages.at(-1)?.content).not.toContain('donde est');
   });
 
   it('creates a pending action for a new file without executing it immediately', async () => {
@@ -447,7 +566,17 @@ describe('AssemOrchestrator', () => {
     expect(snapshot.messages.at(-1)?.content).toContain('hola mundo');
   });
 
-  it.each(['confirmo', 'confirmo todo', 'hazlo', 's\u00ed', 'confirmar'])(
+  it.each([
+    'confirmo',
+    'confirmo todo',
+    'la confirmo',
+    'confirmo todas las acciones pendientes',
+    'hazlo',
+    's\u00ed',
+    'confirmar',
+    'creala',
+    'crea la'
+  ])(
     'executes the most recent pending action when the follow-up is "%s"',
     async (followUp) => {
       const { orchestrator, sandboxRoot, telemetry } = await createOrchestrator();
@@ -656,6 +785,52 @@ describe('AssemOrchestrator', () => {
     expect(replacementSnapshot.messages.at(-1)?.content).not.toContain('He creado');
   });
 
+  it('replaces the pending action cleanly when the user says "mejor que se llame patata.txt"', async () => {
+    const { orchestrator } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'Crea un archivo llamado nota.txt en el sandbox'
+    });
+
+    const replacementSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'mejor que se llame patata.txt'
+    });
+
+    expect(replacementSnapshot.pendingAction?.toolId).toBe('local-files.create-entry');
+    expect(replacementSnapshot.pendingAction?.input).toEqual({
+      kind: 'file',
+      relativePath: 'patata.txt'
+    });
+    expect(replacementSnapshot.messages.at(-1)?.content).toContain('Esperando confirmacion');
+  });
+
+  it('keeps the current pending action blocked when a new unrelated write request arrives', async () => {
+    const { orchestrator } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'Crea un archivo llamado nota.txt en el sandbox'
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'crea una carpeta llamada proyectos'
+    });
+
+    expect(snapshot.pendingAction?.toolId).toBe('local-files.create-entry');
+    expect(snapshot.pendingAction?.input).toEqual({
+      kind: 'file',
+      relativePath: 'nota.txt'
+    });
+    expect(snapshot.messages.at(-1)?.content).toBe(
+      'Todavia hay una accion pendiente esperando confirmacion. Confirmala, rechazala o cancelala antes de iniciar otra accion de escritura.'
+    );
+  });
+
   it('can recover from an existing-path preflight error with a new clean pending action', async () => {
     const { orchestrator, sandboxRoot } = await createOrchestrator();
     const session = await orchestrator.createSession();
@@ -780,7 +955,7 @@ describe('AssemOrchestrator', () => {
     const session = await orchestrator.createSession();
     const snapshot = await orchestrator.handleChat({
       sessionId: session.sessionId,
-      text: 'hola'
+      text: 'necesito una respuesta general'
     });
 
     expect(snapshot.lastModelInvocation?.providerId).toBe('demo-local');

@@ -38,6 +38,19 @@ export type VoiceRecordingState = 'idle' | 'recording' | 'transcribing' | 'error
 
 export type VoiceSpeakingState = 'idle' | 'speaking' | 'error';
 
+export type VoiceTranscriptionDiagnosticCode =
+  | 'audio_payload_missing'
+  | 'audio_decode_failed'
+  | 'audio_empty'
+  | 'audio_too_short'
+  | 'audio_invalid_wav'
+  | 'audio_silent'
+  | 'transcript_missing'
+  | 'transcript_empty'
+  | 'transcript_too_short'
+  | 'language_mismatch_suspected'
+  | 'whisper_execution_failed';
+
 export type TelemetryChannel = 'chat' | 'voice_capture' | 'voice_stt' | 'voice_tts';
 
 export type PendingActionStatus =
@@ -782,6 +795,37 @@ export interface VoiceProviderHealth {
   error?: string;
 }
 
+export interface VoiceAudioDiagnostics {
+  mimeType?: string;
+  fileName?: string;
+  byteLength: number;
+  base64Length?: number;
+  captureSampleRateHz?: number;
+  sampleRateHz?: number;
+  channelCount?: number;
+  bitDepth?: number;
+  sampleCount?: number;
+  approximateDurationMs?: number;
+  peakLevel?: number;
+  rmsLevel?: number;
+  wavValid?: boolean;
+  silenceDetected?: boolean;
+  suspicious?: boolean;
+}
+
+export interface VoiceTranscriptionDiagnostic {
+  code: VoiceTranscriptionDiagnosticCode;
+  summary: string;
+  detail?: string;
+  effectiveLanguage?: string;
+  audio?: VoiceAudioDiagnostics;
+  transcriptJsonGenerated?: boolean;
+  transcriptTextLength?: number;
+  debugArtifactsRetained?: boolean;
+  inputPath?: string;
+  transcriptJsonPath?: string;
+}
+
 export interface SpeechToTextStartRequest {
   sessionId: string;
   language: string;
@@ -792,6 +836,7 @@ export interface SpeechToTextAudioInput {
   base64Data: string;
   fileName?: string;
   durationMs?: number;
+  diagnostics?: VoiceAudioDiagnostics;
 }
 
 export interface SpeechToTextStopRequest {
@@ -801,6 +846,9 @@ export interface SpeechToTextStopRequest {
 export interface SpeechToTextResult {
   transcript: string;
   audioDurationMs: number;
+  audioDiagnostics?: VoiceAudioDiagnostics;
+  effectiveLanguage?: string;
+  diagnostic?: VoiceTranscriptionDiagnostic;
 }
 
 export interface SpeechToTextSession {
@@ -813,6 +861,7 @@ export interface SpeechToTextProvider {
   label: string;
   kind: 'stt';
   isConfigured(): boolean;
+  initialize?(): Promise<void>;
   healthCheck(settings: VoiceSettings): Promise<VoiceProviderHealth>;
   startListening(request: SpeechToTextStartRequest): Promise<SpeechToTextSession>;
 }
@@ -837,6 +886,7 @@ export interface TextToSpeechProvider {
   label: string;
   kind: 'tts';
   isConfigured(): boolean;
+  initialize?(): Promise<void>;
   healthCheck(settings: VoiceSettings): Promise<VoiceProviderHealth>;
   speak(request: TextToSpeechRequest): Promise<TextToSpeechPlayback>;
 }
@@ -853,6 +903,9 @@ export interface VoiceSessionState {
   lastTranscript?: string;
   lastAssistantMessage?: string;
   lastError?: string;
+  lastDiagnostic?: VoiceTranscriptionDiagnostic;
+  lastAudioDiagnostics?: VoiceAudioDiagnostics;
+  lastTranscriptionLanguage?: string;
   recordingStartedAt?: string;
   audioDurationMs?: number;
   updatedAt: string;
@@ -920,6 +973,7 @@ export interface AssemConfig {
   voiceTtsProviderId: string;
   voiceLanguage: string;
   voiceAutoReadResponses: boolean;
+  voiceDebugArtifacts: boolean;
   whisperCppCliPath?: string;
   whisperCppModelPath?: string;
   whisperCppThreads: number;

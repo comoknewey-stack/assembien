@@ -721,13 +721,20 @@ class WindowsTextToSpeechPlayback implements TextToSpeechPlayback {
 
 export const powerShellProviderInternals = {
   sanitizePowerShellMessage,
-  createSttProbeScript,
   createTtsProbeScript,
-  createSttSessionScript,
   createTtsSessionScript
 };
 
-export class WindowsSpeechToTextProvider implements SpeechToTextProvider {
+export const legacyWindowsSttProviderInternals = {
+  sanitizePowerShellMessage,
+  createSttProbeScript,
+  createSttSessionScript
+};
+
+// Legacy STT provider kept for reference only.
+// ASSEM no longer registers this provider in runtime because the active desktop STT flow
+// goes through whisper.cpp with browser-recorded audio uploaded to the local agent.
+export class LegacyWindowsSpeechToTextProvider implements SpeechToTextProvider {
   readonly id = 'windows-system-stt';
   readonly label = 'Windows System Speech Recognition';
   readonly kind = 'stt' as const;

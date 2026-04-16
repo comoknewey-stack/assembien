@@ -5,7 +5,12 @@ import fs from 'node:fs/promises';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { JsonFileStore, appendJsonLine, readJsonLines } from './index';
+import {
+  JsonFileStore,
+  appendJsonLine,
+  cleanupStaleJsonTempFiles,
+  readJsonLines
+} from './index';
 
 describe('JsonFileStore', () => {
   it('reads and updates structured state on disk', async () => {
@@ -73,6 +78,26 @@ describe('JsonFileStore', () => {
 
     expect(renameAttempts).toBeGreaterThan(1);
     expect((await store.read()).counter).toBe(2);
+  });
+
+  it('removes stale sibling tmp files without touching the current JSON file', async () => {
+    const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'assem-persist-stale-'));
+    const filePath = path.join(dataRoot, 'sessions.json');
+    const staleTmpPath = `${filePath}.123.tmp`;
+    const freshTmpPath = `${filePath}.456.tmp`;
+
+    await fs.writeFile(filePath, JSON.stringify({ counter: 1 }), 'utf8');
+    await fs.writeFile(staleTmpPath, 'stale', 'utf8');
+    await fs.writeFile(freshTmpPath, 'fresh', 'utf8');
+
+    const staleDate = new Date(Date.now() - 60 * 60_000);
+    await fs.utimes(staleTmpPath, staleDate, staleDate);
+
+    await cleanupStaleJsonTempFiles(filePath);
+
+    await expect(fs.stat(filePath)).resolves.toBeTruthy();
+    await expect(fs.stat(freshTmpPath)).resolves.toBeTruthy();
+    await expect(fs.stat(staleTmpPath)).rejects.toThrow();
   });
 
   it('appends and reads JSON lines', async () => {

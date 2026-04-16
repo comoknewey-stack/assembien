@@ -7,6 +7,43 @@ import type {
   ProviderHealth
 } from '@assem/shared-types';
 
+function normalizeMessage(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[?!,.;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function detectLanguage(text: string): 'es' | 'en' {
+  const normalized = normalizeMessage(text);
+  const spanishScore = [
+    /\bhola\b/,
+    /\bbuenas\b/,
+    /\bque\b/,
+    /\bpuedes\b/,
+    /\bherramientas\b/,
+    /\bproveedor\b|\bproviders\b/,
+    /\bhora\b/,
+    /\bfecha\b/,
+    /\bsandbox\b/
+  ].filter((pattern) => pattern.test(normalized)).length;
+  const englishScore = [
+    /\bhello\b|\bhi\b|\bhey\b/,
+    /\bwhat\b/,
+    /\bcan\b/,
+    /\btools\b/,
+    /\bprovider\b/,
+    /\btime\b/,
+    /\bdate\b/,
+    /\bsandbox\b/
+  ].filter((pattern) => pattern.test(normalized)).length;
+
+  return englishScore > spanishScore ? 'en' : 'es';
+}
+
 function listTools(request: ModelRequest): string {
   return request.availableTools.map((tool) => tool.label).join(', ');
 }
@@ -57,23 +94,36 @@ export class DemoLocalModelProvider implements EngineProvider {
     const lastUserMessage =
       [...request.messages].reverse().find((message) => message.role === 'user')
         ?.content ?? '';
-    const normalized = lastUserMessage.toLowerCase();
+    const normalized = normalizeMessage(lastUserMessage);
+    const language = detectLanguage(lastUserMessage);
     const toolSummary = listTools(request);
     const activeProfile = request.activeProfile?.name;
 
     let text =
-      'I am running in local scaffold mode. I can already answer time questions, manage a mock calendar, and create local files or folders through a confirmation flow.';
+      language === 'es'
+        ? 'Puedo ayudarte dentro del entorno local actual. Si quieres algo concreto, pideme la hora y la fecha, el estado del sistema, el sandbox o una accion local segura.'
+        : 'I can help within the current local environment. Ask for the time and date, the system status, the sandbox, or a safe local action.';
 
     if (/(what can you do|help|ayuda|que puedes hacer)/i.test(normalized)) {
-      text = `This MVP can use these tools right now: ${toolSummary}. It also understands policy instructions like "Hoy no me preguntes mas" and supports sandbox versus live execution.`;
+      text =
+        language === 'es'
+          ? `Ahora mismo puedo usar estas herramientas: ${toolSummary}. Tambien mantengo historial, confirmaciones, perfiles, scheduler y modos de privacidad/runtime dentro del entorno local actual.`
+          : `Right now I can use these tools: ${toolSummary}. I also keep action history, confirmations, profiles, the scheduler, and privacy/runtime modes inside the current local environment.`;
     } else if (/(privacy|private mode|modo privado|local only)/i.test(normalized)) {
       text =
-        'Privacy mode is currently local-first. The router can keep execution fully local or relax it later without changing the UI.';
+        language === 'es'
+          ? `El modo actual es ${request.privacyMode} / ${request.runtimeMode}.`
+          : `The current mode is ${request.privacyMode} / ${request.runtimeMode}.`;
     } else if (/(history|historial|what happened)/i.test(normalized)) {
       text =
-        'The side panel shows action history, including confirmations, tool results, policy changes, and scheduler runs.';
+        language === 'es'
+          ? 'Puedo revisar historial de acciones, confirmaciones, resultados de tools, cambios de politica y ejecuciones del scheduler dentro de esta sesion.'
+          : 'I can review action history, confirmations, tool results, policy changes, and scheduler runs in this session.';
     } else if (/(profile|perfil)/i.test(normalized) && activeProfile) {
-      text = `The active profile right now is "${activeProfile}". Its persistent notes and preferences can be used to steer future providers without changing the orchestration layer.`;
+      text =
+        language === 'es'
+          ? `El perfil activo ahora mismo es "${activeProfile}".`
+          : `The active profile right now is "${activeProfile}".`;
     }
 
     const latencyMs = Date.now() - startedAt;

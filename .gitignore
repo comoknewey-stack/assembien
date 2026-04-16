@@ -1,11 +1,33 @@
+# Dependencies
 node_modules/
+**/node_modules/
+
+# Build output and caches
 dist/
+**/dist/
 .vite/
+**/.vite/
 coverage/
-*.log
-.env
-sandbox/
-.assem-data/
-.assem-runtime/
+**/coverage/
 **/src-tauri/target/
 **/src-tauri/gen/
+
+# Local environment and logs
+.env
+*.log
+*.tmp
+
+# Local runtime state and sandboxes
+sandbox/
+**/sandbox/
+.assem-data/
+**/.assem-data/
+apps/local-agent/.assem-data/
+.assem-runtime/
+**/.assem-runtime/
+assem-runtime/
+**/voice-temp/
+
+# Local third-party voice/runtime payloads if they appear outside the main runtime folder
+whisper-bin-*.zip
+ggml-*.bin

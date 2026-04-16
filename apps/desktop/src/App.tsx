@@ -8,7 +8,8 @@ import type {
   ScheduledTask,
   SpeechToTextAudioInput,
   SessionSnapshot,
-  SystemStateSnapshot
+  SystemStateSnapshot,
+  VoiceAudioDiagnostics
 } from '@assem/shared-types';
 
 import {
@@ -85,6 +86,8 @@ function healthStatusLabel(status?: string): string {
   switch (status) {
     case 'ok':
       return 'disponible';
+    case 'degraded':
+      return 'parcial';
     case 'warning':
       return 'aviso';
     case 'error':
@@ -115,6 +118,40 @@ function localizedLabel(label?: string): string {
   }
 }
 
+function formatVoiceAudioDiagnostics(audio: VoiceAudioDiagnostics | undefined): string {
+  if (!audio) {
+    return 'Sin muestras de audio todavia.';
+  }
+
+  const details = [`${audio.byteLength} byte(s)`];
+
+  if (typeof audio.approximateDurationMs === 'number') {
+    details.push(`${audio.approximateDurationMs} ms`);
+  }
+
+  if (typeof audio.sampleRateHz === 'number') {
+    details.push(`${audio.sampleRateHz} Hz`);
+  }
+
+  if (typeof audio.channelCount === 'number') {
+    details.push(audio.channelCount === 1 ? 'mono' : `${audio.channelCount} canales`);
+  }
+
+  if (typeof audio.peakLevel === 'number') {
+    details.push(`pico ${audio.peakLevel}`);
+  }
+
+  if (audio.silenceDetected) {
+    details.push('silencio detectado');
+  }
+
+  if (audio.wavValid === false) {
+    details.push('WAV invalido');
+  }
+
+  return details.join(' - ');
+}
+
 function completedTitleLabel(label: string): string {
   switch (label) {
     case 'Current time':
@@ -137,7 +174,7 @@ function completedTitleLabel(label: string): string {
 function providerLabel(toolOrProviderId: string | undefined, fallback?: string): string {
   switch (toolOrProviderId) {
     case 'windows-system-stt':
-      return 'Voz de Windows (STT)';
+      return 'Voz de Windows (STT legado)';
     case 'whisper-cpp':
       return 'whisper.cpp';
     case 'windows-system-tts':
@@ -270,6 +307,16 @@ export default function App() {
   const providerRuntime = systemState?.providerRuntime;
   const voice = systemState?.voice ?? null;
   const voiceSession = voice?.session ?? null;
+  const effectiveVoiceLanguage =
+    voiceSession?.lastTranscriptionLanguage ?? voice?.settings.preferredLanguage ?? 'sin definir';
+  const latestVoiceDiagnostic = voiceSession?.lastDiagnostic;
+  const latestVoiceAudio = voiceSession?.lastAudioDiagnostics;
+  const selectedSttProvider = voice?.sttProviders.find(
+    (provider) => provider.providerId === voice.settings.sttProviderId
+  );
+  const selectedTtsProvider = voice?.ttsProviders.find(
+    (provider) => provider.providerId === voice.settings.ttsProviderId
+  );
   const telemetry = systemState?.telemetry;
   const configuredProvider = providerHealth.find(
     (provider) => provider.providerId === providerRuntime?.configuredDefaultProviderId
@@ -1000,10 +1047,44 @@ export default function App() {
                       {providerLabel(voice?.settings.ttsProviderId, 'sin provider')}
                     </p>
                     <p>
-                      Microfono: {voice?.microphoneAccessible ? 'accesible' : 'no accesible'} - idioma:{' '}
-                      {voice?.settings.preferredLanguage ?? 'sin definir'}
+                      Microfono: {voice?.microphoneAccessible ? 'accesible' : 'no accesible'} - idioma configurado:{' '}
+                      {voice?.settings.preferredLanguage ?? 'sin definir'} - idioma efectivo:{' '}
+                      {effectiveVoiceLanguage}
+                    </p>
+                    <p className="small-copy">
+                      STT legado de Windows: aislado y no activo en esta fase. El STT real de desktop va por whisper.cpp.
                     </p>
                   </div>
+                </article>
+                <article className="card card--compact">
+                  <div className="card__meta">
+                    <strong>Runtime STT</strong>
+                    <span>{healthStatusLabel(selectedSttProvider?.status)}</span>
+                  </div>
+                  <p className="small-copy">
+                    Provider: {providerLabel(selectedSttProvider?.providerId, selectedSttProvider?.label)}
+                  </p>
+                  <p className="small-copy">
+                    Estado real: {selectedSttProvider?.available ? 'listo para transcribir' : 'no listo'}
+                  </p>
+                  {selectedSttProvider?.error && (
+                    <p className="small-copy">Detalle: {selectedSttProvider.error}</p>
+                  )}
+                </article>
+                <article className="card card--compact">
+                  <div className="card__meta">
+                    <strong>Runtime TTS</strong>
+                    <span>{healthStatusLabel(selectedTtsProvider?.status)}</span>
+                  </div>
+                  <p className="small-copy">
+                    Provider: {providerLabel(selectedTtsProvider?.providerId, selectedTtsProvider?.label)}
+                  </p>
+                  <p className="small-copy">
+                    Estado real: {selectedTtsProvider?.available ? 'listo para leer respuestas' : 'no listo'}
+                  </p>
+                  {selectedTtsProvider?.error && (
+                    <p className="small-copy">Detalle: {selectedTtsProvider.error}</p>
+                  )}
                 </article>
                 <article className="card card--compact">
                   <div className="card__meta">
@@ -1066,6 +1147,9 @@ export default function App() {
                   <p className="small-copy">
                     {voiceSession?.lastTranscript ?? 'Todavia no hay ningun transcript en esta sesion.'}
                   </p>
+                  <p className="small-copy">
+                    Audio: {formatVoiceAudioDiagnostics(latestVoiceAudio)}
+                  </p>
                 </article>
                 <article className="card card--compact">
                   <div className="card__meta">
@@ -1078,12 +1162,25 @@ export default function App() {
                 </article>
                 <article className="card card--compact">
                   <div className="card__meta">
-                    <strong>Errores de voz</strong>
-                    <span>{voice?.lastError ? 'revisar' : 'sin errores'}</span>
+                    <strong>Diagnostico de voz</strong>
+                    <span>{voice?.lastError ? 'revisar' : 'estable'}</span>
                   </div>
                   <p className="small-copy">
                     {voice?.lastError ?? 'Sin incidencias de microfono, transcripcion o sintesis en esta sesion.'}
                   </p>
+                  {latestVoiceDiagnostic?.detail && (
+                    <p className="small-copy">Detalle: {latestVoiceDiagnostic.detail}</p>
+                  )}
+                  {latestVoiceDiagnostic && (
+                    <p className="small-copy">
+                      Codigo: {latestVoiceDiagnostic.code} - transcript.json:{' '}
+                      {latestVoiceDiagnostic.transcriptJsonGenerated === undefined
+                        ? 'sin dato'
+                        : latestVoiceDiagnostic.transcriptJsonGenerated
+                          ? 'generado'
+                          : 'no generado'}
+                    </p>
+                  )}
                 </article>
               </section>
             )}

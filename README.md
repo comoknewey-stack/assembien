@@ -58,6 +58,8 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
 - `integrations/*`: tools and provider adapters for clock, calendar and local files.
 - `providers/*`: engine/model providers.
 - `docs/`: technical documentation.
+- `.assem-runtime/`: local-only third-party voice runtime assets for Whisper STT on this machine. It is ignored and should not be committed.
+- `apps/local-agent/.assem-data/`: local-only persisted state for the current dev workflow. It is ignored and should not be committed.
 
 ## Requirements
 
@@ -85,6 +87,7 @@ Available variables:
 - `ASSEM_VOICE_TTS_PROVIDER=windows-system-tts`
 - `ASSEM_VOICE_LANGUAGE=es-ES`
 - `ASSEM_VOICE_AUTO_READ_RESPONSES=false`
+- `ASSEM_VOICE_DEBUG=false`
 - `ASSEM_WHISPER_CPP_CLI_PATH=`
 - `ASSEM_WHISPER_CPP_MODEL_PATH=`
 - `ASSEM_WHISPER_CPP_THREADS=4`
@@ -96,6 +99,7 @@ Current voice providers in this phase:
 
 - STT: `whisper-cpp`
 - TTS: `windows-system-tts`
+- Legacy STT retained only as isolated reference code: `windows-system-stt` is not registered in runtime
 
 This voice phase is local-first and desktop-only:
 
@@ -105,9 +109,50 @@ This voice phase is local-first and desktop-only:
 - assistant replies can be read aloud automatically or manually
 - text chat keeps working normally even if voice is unavailable
 
+Current local runtime layout used by this setup:
+
+- recommended local runtime folder: `<repo>/.assem-runtime/whispercpp`
+- current STT binary path shape: `<repo>/.assem-runtime/whispercpp/bin/Release/whisper-cli.exe`
+- current Whisper model path shape: `<repo>/.assem-runtime/whispercpp/models/ggml-base.bin`
+- this folder contains third-party binaries and downloaded models only; it is not part of the repo
+- ASSEM state is separate and currently lives under `apps/local-agent/.assem-data` when the agent is started through the workspace scripts
+
+You can prepare that runtime from the repo itself:
+
+```bash
+npm run voice:bootstrap
+```
+
+The bootstrap is idempotent:
+
+- if `.assem-runtime/whispercpp` is already ready, it does not redownload or duplicate files
+- if the runtime binary is missing, it downloads and extracts the pinned `whisper.cpp` Windows x64 bundle
+- if the default model is missing, it downloads `ggml-base.bin`
+- it validates the expected binary/model paths at the end
+- it removes its temporary download/extraction folder when finished
+
+Optional bootstrap overrides:
+
+- `ASSEM_WHISPER_CPP_ARCHIVE_URL`
+- `ASSEM_WHISPER_CPP_MODEL_URL`
+- `ASSEM_WHISPER_CPP_ARCHIVE_PATH`
+- `ASSEM_WHISPER_CPP_MODEL_SOURCE_PATH`
+
+Runtime discovery is also stricter now:
+
+- if `ASSEM_WHISPER_CPP_CLI_PATH` and `ASSEM_WHISPER_CPP_MODEL_PATH` are empty, ASSEM resolves the standard `.assem-runtime/whispercpp` layout automatically
+- if the binary is missing, the voice state reports that exact binary path
+- if the model is missing, the voice state reports that exact model path
+- if both files exist, ASSEM runs a small Whisper self-check instead of stopping at `--help`
+
 Quick voice test:
 
-1. Install `whisper.cpp` and download a local model file such as `ggml-base.bin`.
+1. Prepare the local Whisper runtime:
+
+```bash
+npm run voice:bootstrap
+```
+
 2. Make sure you are on Windows with a working default microphone and speakers.
 3. Keep or copy the voice defaults in `.env`:
 
@@ -116,18 +161,35 @@ ASSEM_VOICE_STT_PROVIDER=whisper-cpp
 ASSEM_VOICE_TTS_PROVIDER=windows-system-tts
 ASSEM_VOICE_LANGUAGE=es-ES
 ASSEM_VOICE_AUTO_READ_RESPONSES=false
-ASSEM_WHISPER_CPP_CLI_PATH=C:\\ruta\\a\\whisper-cli.exe
-ASSEM_WHISPER_CPP_MODEL_PATH=C:\\ruta\\a\\ggml-base.bin
+ASSEM_VOICE_DEBUG=false
+ASSEM_WHISPER_CPP_CLI_PATH=
+ASSEM_WHISPER_CPP_MODEL_PATH=
 ASSEM_WHISPER_CPP_THREADS=4
 ```
 
-4. Start the native desktop shell:
+Leave those two Whisper paths empty if you want ASSEM to use the standard `.assem-runtime/whispercpp` layout automatically.
+
+If you need to debug a failed transcription end to end, set:
+
+```bash
+ASSEM_VOICE_DEBUG=true
+```
+
+With that flag enabled, the agent keeps `input.wav` and `transcript.json` under `apps/local-agent/.assem-data/voice-temp/session-*` instead of deleting them immediately.
+
+4. Validate the real voice runtime before opening the app:
+
+```bash
+npm run doctor:voice
+```
+
+5. Start the native desktop shell:
 
 ```bash
 npm run dev:desktop:app
 ```
 
-5. In the desktop app:
+6. In the desktop app:
   - open `Voz`
   - confirm that voice shows `lista` or `parcial`
   - confirm that the STT provider is `whisper.cpp`
@@ -142,6 +204,15 @@ If voice is partially available:
 - missing STT keeps text chat and TTS usable
 - missing TTS keeps text chat and STT usable
 - if both are unavailable, the desktop still works in text mode
+- the voice panel now distinguishes between runtime ready, missing Whisper binary, missing Whisper model, partial voice availability and recent runtime errors
+- failed transcriptions now distinguish between:
+  - audio too short
+  - audio almost silent
+  - invalid WAV
+  - missing/empty transcript JSON
+  - transcript too short
+  - likely language mismatch
+- the voice panel also makes explicit that Windows STT is legacy and not active in runtime
 
 ## Ollama Setup
 
@@ -265,6 +336,12 @@ Check whether the local machine is ready for Tauri:
 npm run doctor:desktop
 ```
 
+Check whether Whisper + Windows TTS are really ready:
+
+```bash
+npm run doctor:voice
+```
+
 ## Test
 
 ```bash
@@ -279,8 +356,13 @@ ASSEM persists local state under `ASSEM_DATA_ROOT`:
 - `profiles.json`: profile memory packs and active profile pointer.
 - `scheduler.json`: scheduled tasks and last run metadata.
 - `telemetry.jsonl`: per-interaction telemetry records.
+- `voice-settings.json`: persisted voice provider and auto-read settings.
+- `voice-temp/`: transient files created during Whisper transcription and removed after successful processing.
+- `*.tmp` sibling files next to JSON stores: stale persistence leftovers that ASSEM now cleans when they are old enough.
 
 The persistence layer is abstracted behind file-backed helpers so the storage backend can later be swapped for SQLite without changing the higher-level interfaces.
+
+In the current local dev workflow, `ASSEM_DATA_ROOT=./.assem-data` is resolved from the local-agent workspace, so these files end up under `apps/local-agent/.assem-data/`.
 
 ## Policy and Confirmations
 
@@ -407,6 +489,11 @@ Detailed Ollama instructions are documented in [docs/ollama-local-setup.md](docs
 - The Tauri shell is configured with a narrow CSP that only allows local agent connectivity to the existing HTTP API.
 - This phase does not expose extra Tauri filesystem or shell permissions to the frontend.
 - Voice in this phase still runs through the local agent. STT uses `whisper.cpp` and TTS uses Windows system speech; it does not add a second native business-logic layer inside Tauri.
+- The old Windows STT implementation remains isolated as legacy code and is not part of the active runtime path anymore.
+- The frontend captures microphone audio, converts it to WAV PCM and sends it to the local agent; the agent then invokes `whisper-cli.exe` with the configured local model.
+- Whisper now performs a cheap real self-check with a generated WAV probe before reporting itself ready.
+- The agent cleans stale `voice-temp/session-*` directories on startup and cleans old `sessions.json.*.tmp`-style leftovers in the JSON persistence layer.
+- The local third-party voice runtime folder `.assem-runtime/` is intentionally ignored from Git because it contains downloaded binaries and models, not ASSEM source code.
 - The router is ready for more providers without changing the UI contract.
 - The local file integration rejects path traversal and writes outside the sandbox root.
 - TypeScript is split into `tsconfig.browser.json` and `tsconfig.node.json`; the Node-side config still uses `moduleResolution: "Bundler"` for the current `tsx` workflow and should be revisited before deeper native/server integrations.

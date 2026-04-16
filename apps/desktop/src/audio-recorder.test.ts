@@ -1,32 +1,42 @@
 import { describe, expect, it } from 'vitest';
 
-import { arrayBufferToBase64, downsampleMonoPcm, encodePcm16Wav } from './audio-recorder';
+import { analyzeMonoPcmCapture } from './audio-recorder';
 
-describe('audio-recorder helpers', () => {
-  it('downsamples mono PCM data to 16 kHz without changing the waveform order', () => {
-    const downsampled = downsampleMonoPcm(
-      new Float32Array([0, 1, 0, -1]),
-      32_000,
-      16_000
-    );
+describe('analyzeMonoPcmCapture', () => {
+  it('flags empty audio as suspicious', () => {
+    const diagnostics = analyzeMonoPcmCapture(new Float32Array(), 16_000, 48_000);
 
-    expect(Array.from(downsampled)).toEqual([0.5, -0.5]);
+    expect(diagnostics.byteLength).toBe(44);
+    expect(diagnostics.captureSampleRateHz).toBe(48_000);
+    expect(diagnostics.sampleRateHz).toBe(16_000);
+    expect(diagnostics.approximateDurationMs).toBe(0);
+    expect(diagnostics.silenceDetected).toBe(true);
+    expect(diagnostics.suspicious).toBe(true);
   });
 
-  it('encodes PCM samples as a valid WAV header plus 16-bit data', () => {
-    const wavBuffer = encodePcm16Wav(new Float32Array([0, 0.5, -0.5]), 16_000);
-    const wavBytes = new Uint8Array(wavBuffer);
-    const view = new DataView(wavBuffer);
+  it('flags almost silent audio as suspicious', () => {
+    const samples = new Float32Array(16_000).fill(0.0005);
+    const diagnostics = analyzeMonoPcmCapture(samples, 16_000, 48_000);
 
-    expect(String.fromCharCode(...wavBytes.slice(0, 4))).toBe('RIFF');
-    expect(String.fromCharCode(...wavBytes.slice(8, 12))).toBe('WAVE');
-    expect(view.getUint32(24, true)).toBe(16_000);
-    expect(view.getUint32(40, true)).toBe(6);
+    expect(diagnostics.approximateDurationMs).toBe(1_000);
+    expect(diagnostics.silenceDetected).toBe(true);
+    expect(diagnostics.suspicious).toBe(true);
   });
 
-  it('serializes audio buffers to base64 for the local agent payload', () => {
-    const buffer = Uint8Array.from([104, 105]).buffer;
+  it('keeps valid speech-like audio within expected WAV parameters', () => {
+    const samples = new Float32Array(16_000);
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] = Math.sin((index / 16_000) * Math.PI * 2 * 220) * 0.45;
+    }
 
-    expect(arrayBufferToBase64(buffer)).toBe('aGk=');
+    const diagnostics = analyzeMonoPcmCapture(samples, 16_000, 44_100);
+
+    expect(diagnostics.byteLength).toBe(44 + samples.length * 2);
+    expect(diagnostics.channelCount).toBe(1);
+    expect(diagnostics.bitDepth).toBe(16);
+    expect(diagnostics.approximateDurationMs).toBe(1_000);
+    expect(diagnostics.peakLevel).toBeGreaterThan(0.4);
+    expect(diagnostics.silenceDetected).toBe(false);
+    expect(diagnostics.suspicious).toBe(false);
   });
 });

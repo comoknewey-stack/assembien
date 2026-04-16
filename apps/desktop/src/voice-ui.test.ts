@@ -17,15 +17,15 @@ function createVoiceState(
     available: true,
     status: 'ready',
     settings: {
-      sttProviderId: 'windows-system-stt',
+      sttProviderId: 'whisper-cpp',
       ttsProviderId: 'windows-system-tts',
       preferredLanguage: 'es-ES',
       autoReadResponses: false
     },
     sttProviders: [
       {
-        providerId: 'windows-system-stt',
-        label: 'Windows STT',
+        providerId: 'whisper-cpp',
+        label: 'whisper.cpp',
         kind: 'stt',
         status: 'ok',
         checkedAt: new Date().toISOString(),
@@ -52,7 +52,7 @@ function createVoiceState(
       recordingState: 'idle',
       speakingState: 'idle',
       microphoneAccessible: true,
-      sttProviderId: 'windows-system-stt',
+      sttProviderId: 'whisper-cpp',
       ttsProviderId: 'windows-system-tts',
       autoReadResponses: false,
       preferredLanguage: 'es-ES',

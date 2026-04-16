@@ -47,7 +47,7 @@ describe('AssemClient', () => {
       status: 200,
       json: vi.fn().mockResolvedValue({
         settings: {
-          sttProviderId: 'windows-system-stt',
+          sttProviderId: 'whisper-cpp',
           ttsProviderId: 'windows-system-tts',
           preferredLanguage: 'es-ES',
           autoReadResponses: true
@@ -56,7 +56,7 @@ describe('AssemClient', () => {
           available: true,
           status: 'ready',
           settings: {
-            sttProviderId: 'windows-system-stt',
+            sttProviderId: 'whisper-cpp',
             ttsProviderId: 'windows-system-tts',
             preferredLanguage: 'es-ES',
             autoReadResponses: true

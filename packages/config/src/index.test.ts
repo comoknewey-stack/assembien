@@ -14,6 +14,7 @@ const trackedKeys = [
   'ASSEM_VOICE_TTS_PROVIDER',
   'ASSEM_VOICE_LANGUAGE',
   'ASSEM_VOICE_AUTO_READ_RESPONSES',
+  'ASSEM_VOICE_DEBUG',
   'ASSEM_WHISPER_CPP_CLI_PATH',
   'ASSEM_WHISPER_CPP_MODEL_PATH',
   'ASSEM_WHISPER_CPP_THREADS',
@@ -78,6 +79,7 @@ describe('createAssemConfig', () => {
     process.env.ASSEM_VOICE_TTS_PROVIDER = 'windows-system-tts';
     process.env.ASSEM_VOICE_LANGUAGE = 'en-US';
     process.env.ASSEM_VOICE_AUTO_READ_RESPONSES = 'true';
+    process.env.ASSEM_VOICE_DEBUG = 'true';
     process.env.ASSEM_WHISPER_CPP_CLI_PATH = './bin/whisper-cli.exe';
     process.env.ASSEM_WHISPER_CPP_MODEL_PATH = './models/ggml-base.bin';
     process.env.ASSEM_WHISPER_CPP_THREADS = '6';
@@ -88,8 +90,22 @@ describe('createAssemConfig', () => {
     expect(config.voiceTtsProviderId).toBe('windows-system-tts');
     expect(config.voiceLanguage).toBe('en-US');
     expect(config.voiceAutoReadResponses).toBe(true);
+    expect(config.voiceDebugArtifacts).toBe(true);
     expect(config.whisperCppCliPath).toMatch(/bin[\\/]+whisper-cli\.exe$/);
     expect(config.whisperCppModelPath).toMatch(/models[\\/]+ggml-base\.bin$/);
     expect(config.whisperCppThreads).toBe(6);
+  });
+
+  it('falls back to the standard local whisper runtime paths when env paths are empty', () => {
+    clearTrackedEnv();
+
+    const config = createAssemConfig();
+
+    expect(config.whisperCppCliPath).toMatch(
+      /\.assem-runtime[\\/]whispercpp[\\/]bin[\\/]Release[\\/]whisper-cli\.exe$/
+    );
+    expect(config.whisperCppModelPath).toMatch(
+      /\.assem-runtime[\\/]whispercpp[\\/]models[\\/]ggml-base\.bin$/
+    );
   });
 });

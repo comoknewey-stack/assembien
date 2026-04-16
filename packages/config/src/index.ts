@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import type { AssemConfig } from '@assem/shared-types';
 
+import { resolveWhisperRuntimePaths } from './whisper-runtime';
+
 const DEFAULT_AGENT_PORT = 4318;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 15_000;
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
@@ -12,6 +14,7 @@ const DEFAULT_VOICE_STT_PROVIDER = 'whisper-cpp';
 const DEFAULT_VOICE_TTS_PROVIDER = 'windows-system-tts';
 const DEFAULT_VOICE_LANGUAGE = 'es-ES';
 const DEFAULT_VOICE_AUTO_READ_RESPONSES = false;
+const DEFAULT_VOICE_DEBUG_ARTIFACTS = false;
 const DEFAULT_WHISPER_CPP_THREADS = Math.max(2, Math.min(8, Math.floor(os.cpus().length / 2) || 2));
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:1420',
@@ -124,6 +127,9 @@ export function createAssemConfig(
   overrides: Partial<AssemConfig> = {}
 ): AssemConfig {
   loadWorkspaceEnvFiles();
+  const whisperRuntimePaths = resolveWhisperRuntimePaths({
+    cwd: process.cwd()
+  });
 
   return {
     appName: overrides.appName ?? 'ASSEM',
@@ -132,11 +138,11 @@ export function createAssemConfig(
       Number.parseInt(process.env.ASSEM_AGENT_PORT ?? `${DEFAULT_AGENT_PORT}`, 10),
     sandboxRoot:
       overrides.sandboxRoot ??
-      process.env.ASSEM_SANDBOX_ROOT ??
+      resolveOptionalPath(process.env.ASSEM_SANDBOX_ROOT) ??
       path.resolve(process.cwd(), 'sandbox'),
     dataRoot:
       overrides.dataRoot ??
-      process.env.ASSEM_DATA_ROOT ??
+      resolveOptionalPath(process.env.ASSEM_DATA_ROOT) ??
       path.resolve(process.cwd(), '.assem-data'),
     defaultProviderId:
       overrides.defaultProviderId ??
@@ -174,12 +180,17 @@ export function createAssemConfig(
         process.env.ASSEM_VOICE_AUTO_READ_RESPONSES,
         DEFAULT_VOICE_AUTO_READ_RESPONSES
       ),
+    voiceDebugArtifacts:
+      overrides.voiceDebugArtifacts ??
+      parseBoolean(process.env.ASSEM_VOICE_DEBUG, DEFAULT_VOICE_DEBUG_ARTIFACTS),
     whisperCppCliPath:
       overrides.whisperCppCliPath ??
-      resolveOptionalPath(process.env.ASSEM_WHISPER_CPP_CLI_PATH),
+      resolveOptionalPath(process.env.ASSEM_WHISPER_CPP_CLI_PATH) ??
+      whisperRuntimePaths.cliPath,
     whisperCppModelPath:
       overrides.whisperCppModelPath ??
-      resolveOptionalPath(process.env.ASSEM_WHISPER_CPP_MODEL_PATH),
+      resolveOptionalPath(process.env.ASSEM_WHISPER_CPP_MODEL_PATH) ??
+      whisperRuntimePaths.modelPath,
     whisperCppThreads:
       overrides.whisperCppThreads ??
       Number.parseInt(
@@ -191,3 +202,5 @@ export function createAssemConfig(
       parseAllowedOrigins(process.env.ASSEM_ALLOWED_ORIGINS)
   };
 }
+
+export * from './whisper-runtime';

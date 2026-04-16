@@ -380,11 +380,14 @@ async function main() {
       getSessionSnapshot: (sessionId) => orchestrator.getSessionSnapshot(sessionId)
     },
     sttProviders: [
+      // Whisper is the only active STT runtime in this phase. The old Windows STT
+      // implementation stays isolated as legacy code and is not registered here.
       new WhisperCppSpeechToTextProvider({
         cliPath: config.whisperCppCliPath,
         modelPath: config.whisperCppModelPath,
         threads: config.whisperCppThreads,
-        tempRoot: path.join(config.dataRoot, 'voice-temp')
+        tempRoot: path.join(config.dataRoot, 'voice-temp'),
+        debugArtifacts: config.voiceDebugArtifacts
       })
     ],
     ttsProviders: [new WindowsTextToSpeechProvider()],

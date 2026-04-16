@@ -33,9 +33,11 @@ import type {
   TemporaryPolicyOverride,
   TemporaryPolicyOverrideInput,
   TimeOutput,
+  ToolSummary,
   ToolDefinition,
   ToolRegistry as ToolRegistryContract,
   ToolExecutionResult,
+  ProviderHealth,
   ModelRouter as ModelRouterContract,
   PolicyEngine as PolicyEngineContract
 } from '@assem/shared-types';
@@ -89,7 +91,8 @@ function normalizeIntentText(text: string): string {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[?!,.;:]+/g, ' ')
+    .replace(/[`"'’]/g, '')
+    .replace(/[?!,.;:¡¿]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -137,7 +140,7 @@ function formatListEntries(entries: LocalDirectoryEntry[]): string {
 
 function isAffirmative(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /^(yes|y|si|confirm|confirma|confirmar|confirmo|confirmo todo|ok|okay|dale|hazlo|adelante|vale|de acuerdo|do it|go ahead)(?:\s+(?:please|por favor))?$/.test(
+  return /^(?:yes|y|si|confirm|confirma|confirmar|confirmo|confirmo todo|confirmo la accion|confirmo todas? las acciones? pendientes|la confirmo|confirmala|ok|okay|dale|hazlo|adelante|vale|de acuerdo|do it|go ahead|crealo|creala|crea la|crea lo)(?:\s+(?:please|por favor))?$/.test(
     normalized
   );
 }
@@ -163,7 +166,57 @@ function resolvePendingActionIntent(text: string): 'approve' | 'reject' | null {
 
 function isTimeRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /(what time is it|current time|time now|\bhora\b|\bfecha\b|que hora|que fecha)/i.test(
+  return (
+    /\bwhat\s+(?:time|date|day)\s+is\s+it\b/i.test(normalized) ||
+    /\bwhat\s+day\s+is\s+today\b/i.test(normalized) ||
+    /\bwhat\s+date\s+is\s+today\b/i.test(normalized) ||
+    /\bcurrent\s+(?:time|date)\b/i.test(normalized) ||
+    /\btime\s+now\b/i.test(normalized) ||
+    /\bque\s+(?:hora|ahora|fecha|dia)\s+es\b/i.test(normalized) ||
+    /\b(?:hora|fecha|dia)\s+actual\b/i.test(normalized) ||
+    /\bfecha\s+de\s+hoy\b/i.test(normalized) ||
+    /\bdia\s+de\s+hoy\b/i.test(normalized)
+  );
+}
+
+function isTemporalDisputeRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:eso esta mal|esta mal|la hora esta mal|la fecha esta mal|ese dia(?: tambien)? esta mal|ese dia tambien esta mal|no eso no|that is wrong|the time is wrong|the date is wrong|the day is wrong|no that is not it)$/.test(
+    normalized
+  );
+}
+
+function isGreetingRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:hola|hola assem|buenas|buenos dias|buenas tardes|buenas noches|hello|hi|hey)(?:\s+assem)?$/.test(
+    normalized
+  );
+}
+
+function isSystemCapabilitiesRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return (
+    /(?:what can you do|que puedes hacer|que puede hacer assem)/i.test(
+      normalized
+    ) ||
+    /(?:what tools do you have|what tools are available|que herramientas(?:\s+(?:tienes|hay|puedes usar))?)/i.test(
+      normalized
+    ) ||
+    /(?:what providers do you have|what provider is active|que providers?(?:\s+(?:tienes|hay|activos?))?|que proveedor(?:\s+(?:tienes|activo))?)/i.test(
+      normalized
+    ) ||
+    /(?:what model are you using|what model do you use|que modelo(?:\s+(?:usas|tienes|activo))?)/i.test(
+      normalized
+    ) ||
+    /(?:what environment are you running in|en que entorno te ejecutas|estado del sistema|system status|runtime status)/i.test(
+      normalized
+    )
+  );
+}
+
+function isAmbiguousSystemRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:dame la obra que tienes|que tienes|que haces|what do you have|what do you do)$/.test(
     normalized
   );
 }
@@ -212,8 +265,11 @@ function detectMessageLanguage(text: string): SupportedLanguage | null {
   }
 
   const spanishScore = countPatternMatches(normalized, [
+    /\bhola\b/,
+    /\bbuenas\b/,
     /\bque\b/,
     /\bhora\b/,
+    /\bdia\b/,
     /\bfecha\b/,
     /\ben espanol\b/,
     /\ben castellano\b/,
@@ -223,8 +279,10 @@ function detectMessageLanguage(text: string): SupportedLanguage | null {
     /\blunes\b|\bmartes\b|\bmiercoles\b|\bjueves\b|\bviernes\b|\bsabado\b|\bdomingo\b/
   ]);
   const englishScore = countPatternMatches(normalized, [
+    /\bhello\b|\bhi\b|\bhey\b/,
     /\bwhat\b/,
     /\btime\b/,
+    /\bday\b/,
     /\bdate\b/,
     /\bin english\b/,
     /\bin spanish\b/,
@@ -339,24 +397,224 @@ function parseTemporalCorrection(
   };
 }
 
-function extractAlternativeEntryName(text: string): string | null {
-  const quoted = extractQuotedValue(text);
-  const namedMatch = text.match(
-    /(?:otro nombre(?:\s+como)?|other name(?:\s+like)?|nombre alternativo(?:\s+como)?)\s+([a-z0-9_\-./ ]+)/i
+function normalizeSearchText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
+function truncateAtNoiseMarker(value: string): string {
+  const markers = [
+    /\bdonde\b/i,
+    /\bwhere\b/i,
+    /\bpor ejemplo\b/i,
+    /\bfor example\b/i,
+    /\bpara empezar\b/i,
+    /\bto start\b/i,
+    /\bahora mismo\b/i,
+    /\bright now\b/i,
+    /\ben\s+(?:la|el)\s+(?:carpeta|directorio)\b/i,
+    /\bdentro\s+del\s+sandbox\b/i,
+    /\bdentro\s+de\s+la\s+carpeta\b/i,
+    /\bin\s+(?:the\s+)?(?:folder|directory)\b/i,
+    /\bin\s+(?:the\s+)?sandbox\b/i,
+    /\ben\s+(?:el\s+)?sandbox\b/i,
+    /\binside\s+(?:the\s+)?sandbox\b/i,
+    /\bwithin\s+(?:the\s+)?sandbox\b/i
+  ];
+  let cutIndex = value.length;
+
+  for (const marker of markers) {
+    const match = marker.exec(value);
+    if (match && match.index < cutIndex) {
+      cutIndex = match.index;
+    }
+  }
+
+  return value.slice(0, cutIndex).trim();
+}
+
+function sanitizeLocalEntryName(value: string): string {
+  let cleaned = value.trim();
+  cleaned = cleaned.replace(/^["']|["']$/g, '').trim();
+  cleaned = cleaned.replace(
+    /^(?:que\s+se\s+llame|que\s+se\s+llama|llamad[oa]|de\s+nombre|con\s+nombre|named|called)\s+/i,
+    ''
   );
-  const fallbackMatch = text.match(
-    /(?:crealo|creala|create it|make it)(?:\s+con|\s+with)?\s+otro nombre(?:\s+como)?\s+([a-z0-9_\-./ ]+)/i
+  cleaned = truncateAtNoiseMarker(cleaned);
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  cleaned = cleaned.replace(/[?!,;:]+$/, '').trim();
+  return cleanName(cleaned, '');
+}
+
+function isClearLocalEntryName(value: string): boolean {
+  const normalized = normalizeIntentText(value);
+  if (!normalized || !/[a-z0-9]/i.test(value)) {
+    return false;
+  }
+
+  if (
+    /^(?:un|una|el|la|a|an|the|que|se|llame|llamado|llamada|nombre|archivo|fichero|file|carpeta|directorio|folder|directory|sandbox|donde|where|por ejemplo|for example|para empezar|to start|ahora mismo|right now)$/.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+
+  return !/\b(?:donde|where|por ejemplo|for example|para empezar|to start|ahora mismo|right now)\b/i.test(
+    normalized
+  );
+}
+
+interface LocalCreateTarget {
+  kind: 'file' | 'directory';
+  extensionHint?: string;
+  matchEnd: number;
+}
+
+interface LocalCreateIntentParseResult {
+  input: LocalFileInput | null;
+  missingNameForKind: 'file' | 'directory' | null;
+}
+
+function resolveLocalCreateTarget(text: string): LocalCreateTarget | null {
+  const directPatterns: Array<{
+    kind: 'file' | 'directory';
+    regex: RegExp;
+  }> = [
+    {
+      kind: 'file',
+      regex:
+        /\b(?:create|make|write|crear|crea|genera|generar)\b(?:\s+(?:me|lo|la|un|una|el|la|a|an|the|otro|otra))*\s+(?:archivo|fichero|file)(?:\.([a-z0-9]+))?\b/i
+    },
+    {
+      kind: 'directory',
+      regex:
+        /\b(?:create|make|write|crear|crea|genera|generar)\b(?:\s+(?:me|lo|la|un|una|el|la|a|an|the|otro|otra))*\s+(?:carpeta|directorio|folder|directory)\b/i
+    }
+  ];
+
+  let bestMatch:
+    | {
+        kind: 'file' | 'directory';
+        match: RegExpExecArray;
+      }
+    | null = null;
+
+  for (const candidate of directPatterns) {
+    const match = candidate.regex.exec(text);
+    if (!match) {
+      continue;
+    }
+
+    if (!bestMatch || match.index < bestMatch.match.index) {
+      bestMatch = {
+        kind: candidate.kind,
+        match
+      };
+    }
+  }
+
+  if (bestMatch) {
+    return {
+      kind: bestMatch.kind,
+      extensionHint:
+        bestMatch.kind === 'file' ? bestMatch.match[1]?.toLowerCase() : undefined,
+      matchEnd: bestMatch.match.index + bestMatch.match[0].length
+    };
+  }
+
+  const searchText = normalizeSearchText(text);
+  const createMatch = /\b(?:create|make|write|crear|crea|genera|generar)\b/i.exec(
+    searchText
+  );
+  if (!createMatch) {
+    return null;
+  }
+
+  const slice = searchText.slice(createMatch.index);
+  const fileMatch = /\b(?:archivo|fichero|file)(?:\.([a-z0-9]+))?\b/i.exec(slice);
+  const directoryMatch = /\b(?:carpeta|directorio|folder|directory)\b/i.exec(
+    slice
   );
 
-  const value = quoted ?? namedMatch?.[1] ?? fallbackMatch?.[1] ?? null;
-  return value
-    ? cleanName(
-        stripTrailingSandboxQualifier(
-          stripLeadingNamingQualifier(value)
-        ),
-        ''
-      )
-    : null;
+  if (!fileMatch && !directoryMatch) {
+    return null;
+  }
+
+  if (
+    fileMatch &&
+    (!directoryMatch || fileMatch.index <= directoryMatch.index)
+  ) {
+    return {
+      kind: 'file',
+      extensionHint: fileMatch[1]?.toLowerCase(),
+      matchEnd: createMatch.index + fileMatch.index + fileMatch[0].length
+    };
+  }
+
+  if (directoryMatch) {
+    return {
+      kind: 'directory',
+      matchEnd: createMatch.index + directoryMatch.index + directoryMatch[0].length
+    };
+  }
+
+  return null;
+}
+
+function extractExplicitLocalEntryName(text: string): string | null {
+  const quoted = extractQuotedValue(text);
+  if (quoted) {
+    const candidate = sanitizeLocalEntryName(quoted);
+    return isClearLocalEntryName(candidate) ? candidate : null;
+  }
+
+  const patterns = [
+    /(?:mejor\s+que\s+se\s+llame|better\s+call\s+it)\s+(.+)$/i,
+    /(?:hazlo\s+con\s+otro\s+nombre(?:\s+como)?|make\s+it\s+with\s+another\s+name(?:\s+like)?)\s+(.+)$/i,
+    /(?:otro\s+nombre(?:\s+como)?|other\s+name(?:\s+like)?|nombre\s+alternativo(?:\s+como)?)\s+(.+)$/i,
+    /(?:que\s+se\s+llame|que\s+se\s+llama|named|called|llamad[oa]|de\s+nombre|con\s+nombre)\s+(.+)$/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (!match?.[1]) {
+      continue;
+    }
+
+    const candidate = sanitizeLocalEntryName(match[1]);
+    if (isClearLocalEntryName(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function applySuggestedFileExtension(
+  relativePath: string,
+  extensionHint?: string
+): string {
+  if (/\.[a-z0-9]+$/i.test(relativePath)) {
+    return relativePath;
+  }
+
+  if (extensionHint) {
+    return `${relativePath}.${extensionHint}`;
+  }
+
+  return `${relativePath}.txt`;
+}
+
+function extractAlternativeEntryName(text: string): string | null {
+  if (!isLocalCreateReformulationRequest(text)) {
+    return null;
+  }
+
+  return extractExplicitLocalEntryName(text);
 }
 
 function isHistoryRequest(text: string): boolean {
@@ -389,6 +647,13 @@ function wantsLocalFileCreate(text: string): boolean {
     /\b(file|folder|directory|archivo|fichero|carpeta|directorio)\b/i.test(
       normalized
     )
+  );
+}
+
+function isLocalCreateReformulationRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /(?:\botro nombre\b|\bnombre alternativo\b|\bmejor que se llame\b|\bhazlo con otro nombre\b|\bque se llame\b|\bcalled\b|\bnamed\b|\brename it\b|\bother name\b)/i.test(
+    normalized
   );
 }
 
@@ -467,36 +732,43 @@ function createDirectOverride(input: TemporaryPolicyOverrideInput): TemporaryPol
   };
 }
 
-function extractLocalFileInput(text: string): LocalFileInput {
-  const kind = /(folder|directory|carpeta|directorio)/i.test(text)
-    ? 'directory'
-    : 'file';
-  const quoted = extractQuotedValue(text);
-
-  const namedMatch = text.match(
-    /(?:named|called|llamad[oa]|de nombre|con nombre)\s+([a-z0-9_\-./ ]+)/i
-  );
-  const genericMatch = text.match(
-    /(?:file|folder|directory|archivo|fichero|carpeta|directorio)(?:\s+(?:named|called|llamad[oa]|de nombre|con nombre))?\s+([a-z0-9_\-./ ]+)/i
-  );
-
-  const fallback = kind === 'directory' ? 'new-folder' : 'notes.txt';
-  let relativePath = cleanName(
-    stripTrailingSandboxQualifier(
-      stripLeadingNamingQualifier(
-        quoted ?? namedMatch?.[1] ?? genericMatch?.[1] ?? fallback
-      )
-    ),
-    fallback
-  );
-
-  if (kind === 'file' && !/\.[a-z0-9]+$/i.test(relativePath)) {
-    relativePath = `${relativePath}.txt`;
+function extractLocalFileInput(text: string): LocalCreateIntentParseResult {
+  const target = resolveLocalCreateTarget(text);
+  if (!target) {
+    return {
+      input: null,
+      missingNameForKind: null
+    };
   }
 
+  const explicitName = extractExplicitLocalEntryName(text);
+  const remainder = text.slice(target.matchEnd).trim();
+  const directName = explicitName
+    ? null
+    : (() => {
+        const candidate = sanitizeLocalEntryName(remainder);
+        return isClearLocalEntryName(candidate) ? candidate : null;
+      })();
+  const relativePathCandidate = explicitName ?? directName;
+
+  if (!relativePathCandidate) {
+    return {
+      input: null,
+      missingNameForKind: target.kind
+    };
+  }
+
+  const relativePath =
+    target.kind === 'file'
+      ? applySuggestedFileExtension(relativePathCandidate, target.extensionHint)
+      : relativePathCandidate;
+
   return {
-    kind,
-    relativePath
+    input: {
+      kind: target.kind,
+      relativePath
+    },
+    missingNameForKind: null
   };
 }
 
@@ -815,6 +1087,24 @@ export class AssemOrchestrator {
         return snapshot;
       }
 
+      const greetingResponse = await this.handleGreetingIntent(
+        session,
+        text,
+        trace
+      );
+      if (greetingResponse) {
+        return greetingResponse;
+      }
+
+      const capabilitiesResponse = await this.handleSystemCapabilitiesIntent(
+        session,
+        text,
+        trace
+      );
+      if (capabilitiesResponse) {
+        return capabilitiesResponse;
+      }
+
       const temporalResponse = await this.handleTemporalIntent(
         session,
         text,
@@ -864,6 +1154,15 @@ export class AssemOrchestrator {
         );
       }
 
+      const localCreateClarification = await this.handleLocalCreateClarification(
+        session,
+        text,
+        trace
+      );
+      if (localCreateClarification) {
+        return localCreateClarification;
+      }
+
       const localCreateInput = this.resolveLocalCreateIntent(session, text);
       if (localCreateInput) {
         return await this.executeOrQueue(
@@ -881,6 +1180,15 @@ export class AssemOrchestrator {
       );
       if (contextualFollowUp) {
         return contextualFollowUp;
+      }
+
+      const ambiguousResponse = await this.handleAmbiguousIntent(
+        session,
+        text,
+        trace
+      );
+      if (ambiguousResponse) {
+        return ambiguousResponse;
       }
 
       const activeProfile = await this.deps.memoryBackend.getActiveProfile();
@@ -1296,6 +1604,257 @@ export class AssemOrchestrator {
     return `Actividad reciente: ${preview}.`;
   }
 
+  private async handleLocalCreateClarification(
+    session: SessionState,
+    text: string,
+    trace: InteractionTrace
+  ): Promise<SessionSnapshot | null> {
+    const parsedIntent = extractLocalFileInput(text);
+    if (!wantsLocalFileCreate(text) || !parsedIntent.missingNameForKind) {
+      return null;
+    }
+
+    trace.providerId = 'tool-only';
+    trace.model = 'tool-only';
+    trace.result = 'success';
+    const snapshot = await this.reply(
+      session,
+      this.renderMissingLocalCreateName(parsedIntent.missingNameForKind)
+    );
+    await this.recordTelemetry(session, trace);
+    return snapshot;
+  }
+
+  private renderMissingLocalCreateName(kind: 'file' | 'directory'): string {
+    if (kind === 'directory') {
+      return 'Necesito el nombre de la carpeta para prepararla. Dime algo como "crea una carpeta llamada proyectos".';
+    }
+
+    return 'Necesito el nombre del archivo para prepararlo. Dime algo como "crea un archivo llamado nota.txt".';
+  }
+
+  private async handleGreetingIntent(
+    session: SessionState,
+    text: string,
+    trace: InteractionTrace
+  ): Promise<SessionSnapshot | null> {
+    if (!isGreetingRequest(text)) {
+      return null;
+    }
+
+    const language = this.resolveConversationLanguage(session, text);
+    trace.providerId = 'tool-only';
+    trace.model = 'tool-only';
+    trace.result = 'success';
+    const snapshot = await this.reply(session, this.renderGreeting(language));
+    await this.recordTelemetry(session, trace);
+    return snapshot;
+  }
+
+  private async handleSystemCapabilitiesIntent(
+    session: SessionState,
+    text: string,
+    trace: InteractionTrace
+  ): Promise<SessionSnapshot | null> {
+    if (!isSystemCapabilitiesRequest(text)) {
+      return null;
+    }
+
+    const language = this.resolveConversationLanguage(session, text);
+    const providerHealth = await this.deps.modelRouter.healthCheck();
+    trace.providerId = 'tool-only';
+    trace.model = 'tool-only';
+    trace.result = 'success';
+    const snapshot = await this.reply(
+      session,
+      this.renderSystemCapabilities(session, providerHealth, language)
+    );
+    await this.recordTelemetry(session, trace);
+    return snapshot;
+  }
+
+  private async handleAmbiguousIntent(
+    session: SessionState,
+    text: string,
+    trace: InteractionTrace
+  ): Promise<SessionSnapshot | null> {
+    if (!isAmbiguousSystemRequest(text)) {
+      return null;
+    }
+
+    const language = this.resolveConversationLanguage(session, text);
+    trace.providerId = 'tool-only';
+    trace.model = 'tool-only';
+    trace.result = 'success';
+    const snapshot = await this.reply(
+      session,
+      this.renderAmbiguousClarification(text, language)
+    );
+    await this.recordTelemetry(session, trace);
+    return snapshot;
+  }
+
+  private renderGreeting(language: SupportedLanguage): string {
+    const availableToolIds = new Set(
+      this.deps.toolRegistry.summaries().map((tool) => tool.id)
+    );
+    const capabilityChunks =
+      language === 'es'
+        ? [
+            availableToolIds.has('clock-time.get-current')
+              ? 'consultar la fecha y la hora reales'
+              : null,
+            availableToolIds.has('local-files.list-directory')
+              ? 'trabajar dentro del sandbox local'
+              : null,
+            availableToolIds.has('calendar.list-events')
+              ? 'revisar el calendario mock'
+              : null,
+            'mostrar el estado real del sistema'
+          ].filter(Boolean)
+        : [
+            availableToolIds.has('clock-time.get-current')
+              ? 'check the real date and time'
+              : null,
+            availableToolIds.has('local-files.list-directory')
+              ? 'work inside the local sandbox'
+              : null,
+            availableToolIds.has('calendar.list-events')
+              ? 'review the mock calendar'
+              : null,
+            'show the real system status'
+          ].filter(Boolean);
+
+    if (language === 'es') {
+      return `Hola. Puedo ${capabilityChunks.join(', ')}.`;
+    }
+
+    return `Hello. I can ${capabilityChunks.join(', ')}.`;
+  }
+
+  private renderSystemCapabilities(
+    session: SessionState,
+    providerHealth: ProviderHealth[],
+    language: SupportedLanguage
+  ): string {
+    const tools = this.deps.toolRegistry
+      .summaries()
+      .map((tool) => this.describeAvailableTool(tool, language))
+      .join(', ');
+    const providers = providerHealth
+      .map((health) => this.describeProviderHealth(health, language))
+      .join('; ');
+    const lastInvocation = session.lastModelInvocation;
+
+    if (language === 'es') {
+      const lastProviderSentence = lastInvocation
+        ? `Ultimo provider usado en esta sesion: ${lastInvocation.providerId} con ${lastInvocation.resolvedModel ?? lastInvocation.model}.`
+        : 'Todavia no he usado ningun provider conversacional en esta sesion.';
+      return `ASSEM se esta ejecutando en modo ${session.activeMode.privacy} / ${session.activeMode.runtime}. Herramientas disponibles ahora mismo: ${tools}. Proveedor configurado por defecto: ${this.deps.config.defaultProviderId}. Estado real de providers: ${providers}. ${lastProviderSentence}`;
+    }
+
+    const lastProviderSentence = lastInvocation
+      ? `Last provider used in this session: ${lastInvocation.providerId} with ${lastInvocation.resolvedModel ?? lastInvocation.model}.`
+      : 'No conversational provider has been used in this session yet.';
+    return `ASSEM is running in ${session.activeMode.privacy} / ${session.activeMode.runtime} mode. Available tools right now: ${tools}. Configured default provider: ${this.deps.config.defaultProviderId}. Real provider status: ${providers}. ${lastProviderSentence}`;
+  }
+
+  private describeAvailableTool(
+    tool: ToolSummary,
+    language: SupportedLanguage
+  ): string {
+    if (language === 'es') {
+      switch (tool.id) {
+        case 'clock-time.get-current':
+          return 'hora y fecha actuales';
+        case 'local-files.list-directory':
+          return 'listar el sandbox';
+        case 'local-files.read-file':
+          return 'leer archivos del sandbox';
+        case 'local-files.create-entry':
+          return 'crear archivos o carpetas con confirmacion';
+        case 'calendar.list-events':
+          return 'listar el calendario mock';
+        case 'calendar.create-event':
+          return 'crear eventos mock';
+        default:
+          return tool.label;
+      }
+    }
+
+    switch (tool.id) {
+      case 'clock-time.get-current':
+        return 'current time and date';
+      case 'local-files.list-directory':
+        return 'list the sandbox';
+      case 'local-files.read-file':
+        return 'read sandbox files';
+      case 'local-files.create-entry':
+        return 'create files or folders with confirmation';
+      case 'calendar.list-events':
+        return 'list the mock calendar';
+      case 'calendar.create-event':
+        return 'create mock events';
+      default:
+        return tool.label;
+    }
+  }
+
+  private describeProviderHealth(
+    health: ProviderHealth,
+    language: SupportedLanguage
+  ): string {
+    const status =
+      language === 'es'
+        ? health.status === 'ok'
+          ? 'ok'
+          : health.status === 'degraded'
+            ? 'degradado'
+            : 'no disponible'
+        : health.status === 'ok'
+          ? 'ok'
+          : health.status === 'degraded'
+            ? 'degraded'
+            : 'unavailable';
+    const configured =
+      language === 'es'
+        ? health.configured
+          ? 'configurado'
+          : 'no configurado'
+        : health.configured
+          ? 'configured'
+          : 'not configured';
+    const model = health.resolvedModel ?? health.defaultModel;
+
+    if (language === 'es') {
+      return `${health.providerId} (${status}, ${configured}, modelo ${model})`;
+    }
+
+    return `${health.providerId} (${status}, ${configured}, model ${model})`;
+  }
+
+  private renderAmbiguousClarification(
+    text: string,
+    language: SupportedLanguage
+  ): string {
+    const normalized = normalizeIntentText(text);
+    const mentionsWork = /\bobra\b/.test(normalized);
+
+    if (language === 'es') {
+      if (mentionsWork) {
+        return 'No tengo claro a que te refieres con "obra". Si preguntas por herramientas, por el estado del sistema o por el contenido del sandbox, dimelo asi de forma directa.';
+      }
+
+      return 'No me queda claro si preguntas por mis herramientas, por el estado del sistema o por el contenido del sandbox. Aclaramelo en una frase.';
+    }
+
+    if (mentionsWork) {
+      return 'I am not sure what you mean by "obra". If you mean tools, system status, or sandbox contents, ask for that directly.';
+    }
+
+    return 'I am not sure whether you are asking about my tools, the system status, or the sandbox contents. Clarify it in one short sentence.';
+  }
+
   private describeConfirmation(tool: ToolDefinition, input: unknown): string {
     if (tool.id === 'local-files.create-entry') {
       const localInput = input as LocalFileInput;
@@ -1350,7 +1909,7 @@ export class AssemOrchestrator {
     text: string
   ): LocalFileInput | null {
     if (wantsLocalFileCreate(text)) {
-      return extractLocalFileInput(text);
+      return extractLocalFileInput(text).input;
     }
 
     const alternativeName = extractAlternativeEntryName(text);
@@ -1363,12 +1922,15 @@ export class AssemOrchestrator {
       return null;
     }
 
-    let relativePath = cleanName(
+    let relativePath = sanitizeLocalEntryName(
       stripTrailingSandboxQualifier(
         stripLeadingNamingQualifier(alternativeName)
-      ),
-      previousInput.kind === 'directory' ? 'new-folder' : 'notes.txt'
+      )
     );
+
+    if (!isClearLocalEntryName(relativePath)) {
+      return null;
+    }
 
     if (previousInput.kind === 'file' && !/\.[a-z0-9]+$/i.test(relativePath)) {
       relativePath = `${relativePath}.txt`;
@@ -1390,9 +1952,26 @@ export class AssemOrchestrator {
       return null;
     }
 
+    if (wantsLocalFileCreate(text)) {
+      return null;
+    }
+
+    if (!isLocalCreateReformulationRequest(text)) {
+      return null;
+    }
+
     const replacementInput = this.resolveLocalCreateIntent(session, text);
     if (!replacementInput) {
-      return null;
+      trace.providerId = 'tool-only';
+      trace.model = 'tool-only';
+      trace.result = 'success';
+      const kind = (pendingAction.input as LocalFileInput).kind;
+      const snapshot = await this.reply(
+        session,
+        this.renderPendingCreateReformulationClarification(kind)
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
     }
 
     pendingAction.status = 'cancelled';
@@ -1422,6 +2001,16 @@ export class AssemOrchestrator {
       replacementInput,
       trace
     );
+  }
+
+  private renderPendingCreateReformulationClarification(
+    kind: 'file' | 'directory'
+  ): string {
+    if (kind === 'directory') {
+      return 'Si quieres cambiar la accion pendiente, dime el nuevo nombre de la carpeta. Por ejemplo: "mejor que se llame proyectos".';
+    }
+
+    return 'Si quieres cambiar la accion pendiente, dime el nuevo nombre del archivo. Por ejemplo: "mejor que se llame Gayeta.txt".';
   }
 
   private async preflightLocalCreate(
@@ -1561,6 +2150,33 @@ export class AssemOrchestrator {
         trace,
         nextSnapshot,
         this.renderTemporalCorrection(nextSnapshot, temporalCorrection)
+      );
+    }
+
+    if (isTemporalDisputeRequest(text)) {
+      if (!activeSnapshot) {
+        trace.providerId = 'tool-only';
+        trace.model = 'tool-only';
+        trace.result = 'success';
+        const snapshot = await this.reply(
+          session,
+          'No tengo un dato temporal reciente para revisar. Pideme primero la hora o la fecha.'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const language = this.resolveConversationLanguage(session, text);
+      const nextSnapshot = {
+        ...activeSnapshot,
+        locale: localeForLanguage(language),
+        renderedLanguage: language
+      };
+      return this.replyFromTemporalSnapshot(
+        session,
+        trace,
+        nextSnapshot,
+        this.renderTemporalDispute(nextSnapshot)
       );
     }
 
@@ -1806,6 +2422,20 @@ export class AssemOrchestrator {
     return `Yes. I am still using the same time snapshot: ${this.renderTemporalSnapshot(
       temporalSnapshot
     )}`;
+  }
+
+  private renderTemporalDispute(
+    temporalSnapshot: SessionTemporalSnapshot
+  ): string {
+    if (temporalSnapshot.renderedLanguage === 'es') {
+      return `Estoy revisando el mismo dato temporal que acabo de usar: ${this.renderTemporalSnapshot(
+        temporalSnapshot
+      )} Si quieres una comprobacion nueva, pideme que vuelva a consultar la hora y la fecha.`;
+    }
+
+    return `I am reviewing the same time snapshot I just used: ${this.renderTemporalSnapshot(
+      temporalSnapshot
+    )} If you want a fresh check, ask me to query the time and date again.`;
   }
 
   private renderTemporalCorrection(

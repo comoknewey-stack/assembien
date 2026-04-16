@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildVoiceLanguageCandidates,
+  legacyWindowsSttProviderInternals,
   powerShellProviderInternals
 } from './powershell-provider';
 
@@ -13,7 +14,7 @@ describe('Windows speech PowerShell provider internals', () => {
   });
 
   it('resolves speech recognizers by installed recognizer id', () => {
-    const script = powerShellProviderInternals.createSttProbeScript('es-ES');
+    const script = legacyWindowsSttProviderInternals.createSttProbeScript('es-ES');
 
     expect(script).toContain('InstalledRecognizers()');
     expect(script).toContain('Resolve-AssemRecognizerInfo');
