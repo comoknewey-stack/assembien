@@ -51,7 +51,44 @@ export type VoiceTranscriptionDiagnosticCode =
   | 'language_mismatch_suspected'
   | 'whisper_execution_failed';
 
-export type TelemetryChannel = 'chat' | 'voice_capture' | 'voice_stt' | 'voice_tts';
+export type TelemetryChannel =
+  | 'chat'
+  | 'voice_capture'
+  | 'voice_stt'
+  | 'voice_tts'
+  | 'task_manager'
+  | 'task_runtime'
+  | 'task_planner'
+  | 'task_interrupt';
+
+export type TaskTelemetryEventType =
+  | 'task_created'
+  | 'task_started'
+  | 'task_progress_updated'
+  | 'task_paused'
+  | 'task_resumed'
+  | 'task_completed'
+  | 'task_failed'
+  | 'task_cancelled'
+  | 'task_execution_started'
+  | 'task_step_started'
+  | 'task_step_completed'
+  | 'task_execution_paused'
+  | 'task_execution_resumed'
+  | 'task_execution_cancelled'
+  | 'task_execution_completed'
+  | 'task_execution_failed'
+  | 'task_plan_created'
+  | 'task_plan_refined'
+  | 'task_plan_rejected'
+  | 'task_plan_applied'
+  | 'task_interrupt_status_query'
+  | 'task_interrupt_pause'
+  | 'task_interrupt_resume'
+  | 'task_interrupt_cancel'
+  | 'task_interrupt_refinement'
+  | 'task_interrupt_clarification'
+  | 'task_interrupt_independent_query';
 
 export type PendingActionStatus =
   | 'pending'
@@ -68,6 +105,62 @@ export type ScheduledTaskKind =
   | 'simple_check';
 
 export type ScheduledTaskCadence = 'manual' | 'once' | 'daily';
+
+export type TaskStatus =
+  | 'pending'
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type TaskStepStatus =
+  | 'pending'
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'completed'
+  | 'cancelled';
+
+export type TaskArtifactKind =
+  | 'directory'
+  | 'file'
+  | 'document'
+  | 'table'
+  | 'chart'
+  | 'report'
+  | 'other';
+
+export type TaskType = 'research_report_basic';
+
+export type TaskInterruptKind =
+  | 'task_status_query'
+  | 'task_pause'
+  | 'task_resume'
+  | 'task_cancel'
+  | 'task_goal_refinement'
+  | 'task_output_refinement'
+  | 'task_clarification_needed'
+  | 'independent_query';
+
+export type TaskRefinementCategory = 'goal' | 'output';
+
+export type TaskRefinementType =
+  | 'length'
+  | 'language'
+  | 'summary_priority'
+  | 'format'
+  | 'focus'
+  | 'general';
+
+export type TaskStatusQueryKind =
+  | 'status'
+  | 'progress'
+  | 'step'
+  | 'remaining'
+  | 'completion'
+  | 'plan';
 
 export interface ActiveMode {
   privacy: PrivacyMode;
@@ -444,6 +537,9 @@ export interface TelemetryRecord {
   fallbackReason?: string;
   audioDurationMs?: number;
   textLength?: number;
+  eventType?: TaskTelemetryEventType;
+  taskId?: string;
+  taskStatus?: TaskStatus;
 }
 
 export interface TelemetrySummary {
@@ -515,6 +611,307 @@ export interface Scheduler {
   ): Promise<ScheduledTaskRun>;
 }
 
+export interface TaskStep {
+  id: string;
+  label: string;
+  status: TaskStepStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface TaskArtifact {
+  id: string;
+  kind: TaskArtifactKind;
+  label: string;
+  createdAt: string;
+  filePath?: string;
+  contentType?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskPlanPhase {
+  id: string;
+  label: string;
+  description?: string;
+  stepIds: string[];
+}
+
+export interface TaskPlanStep {
+  id: string;
+  phaseId: string;
+  label: string;
+  description?: string;
+  expectedArtifactIds?: string[];
+}
+
+export interface TaskPlanArtifact {
+  id: string;
+  kind: TaskArtifactKind;
+  label: string;
+  description?: string;
+  relatedStepId?: string;
+}
+
+export interface TaskRefinementDraft {
+  category: TaskRefinementCategory;
+  type: TaskRefinementType;
+  instruction: string;
+  label: string;
+  value?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskRefinement extends TaskRefinementDraft {
+  id: string;
+  createdAt: string;
+}
+
+export interface TaskPlan {
+  id: string;
+  objective: string;
+  taskType: TaskType;
+  summary: string;
+  phases: TaskPlanPhase[];
+  steps: TaskPlanStep[];
+  expectedArtifacts: TaskPlanArtifact[];
+  restrictions: string[];
+  refinements: TaskRefinement[];
+  source: 'planner_v1';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskPlanResult {
+  accepted: boolean;
+  plan?: TaskPlan;
+  reason?: string;
+  clarificationMessage?: string;
+}
+
+export interface TaskPlanningContext {
+  session: SessionState;
+  text: string;
+  objective?: string;
+  requestedTaskType?: string;
+  activeProfile?: ProfileSummary | null;
+  initialRefinements?: TaskRefinement[];
+  now?: Date;
+}
+
+export interface TaskInterruptState {
+  refinements: TaskRefinement[];
+  lastInterruptAt?: string;
+  lastClarificationMessage?: string;
+}
+
+export interface TaskInterruptClassification {
+  kind: TaskInterruptKind;
+  matchedText: string;
+  statusQueryKind?: TaskStatusQueryKind;
+  refinement?: TaskRefinementDraft;
+  clarificationMessage?: string;
+  reason?: string;
+}
+
+export interface TaskInterruptRequest {
+  text: string;
+  session: SessionState;
+  activeTask: AssemTask;
+}
+
+export interface AssemTask {
+  id: string;
+  sessionId: string;
+  objective: string;
+  status: TaskStatus;
+  progressPercent: number | null;
+  currentPhase: string | null;
+  steps: TaskStep[];
+  currentStepId?: string;
+  artifacts: TaskArtifact[];
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  pausedAt?: string;
+  failureReason?: string;
+  plan?: TaskPlan;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskStepInput {
+  id?: string;
+  label: string;
+}
+
+export interface TaskCreateInput {
+  sessionId: string;
+  objective: string;
+  status?: Extract<TaskStatus, 'pending' | 'active'>;
+  progressPercent?: number | null;
+  currentPhase?: string | null;
+  steps?: TaskStepInput[];
+  currentStepId?: string;
+  plan?: TaskPlan;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskProgressUpdateInput {
+  progressPercent: number | null;
+  currentPhase?: string | null;
+  currentStepId?: string;
+  plan?: TaskPlan;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskPhaseAdvanceInput {
+  currentPhase: string;
+  currentStepId?: string;
+  currentStepLabel?: string;
+  progressPercent?: number | null;
+  plan?: TaskPlan;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskStepCompletionInput {
+  progressPercent?: number | null;
+  currentPhase?: string | null;
+  plan?: TaskPlan;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskArtifactInput {
+  kind: TaskArtifactKind;
+  label: string;
+  filePath?: string;
+  contentType?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskExecutionRequest {
+  sessionId: string;
+  taskType: TaskType;
+  objective: string;
+  autoStart?: boolean;
+  plan?: TaskPlan;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskExecutionResult {
+  taskId: string;
+  taskType: TaskType;
+  status: Extract<TaskStatus, 'completed' | 'failed' | 'cancelled'>;
+  summary: string;
+  artifacts: TaskArtifact[];
+  completedAt: string;
+}
+
+export interface TaskRuntimeEvent {
+  type: TaskTelemetryEventType;
+  task: AssemTask;
+  timestamp: string;
+  stepId?: string;
+  stepLabel?: string;
+  detail?: string;
+  result?: TaskExecutionResult;
+}
+
+export interface TaskExecutionContext {
+  task: AssemTask;
+  session: SessionState;
+  sandboxRoot: string;
+  dataRoot: string;
+  activeProfile?: ProfileMemory | null;
+  executeTool<Input = unknown, Output = unknown>(
+    toolId: string,
+    input: Input
+  ): Promise<ToolExecutionResult<Output>>;
+  invokeModel(
+    messages: ChatMessage[],
+    requiredCapabilities?: ProviderCapability[]
+  ): Promise<ModelResponse>;
+  getTask(): Promise<AssemTask>;
+  updateProgress(input: TaskProgressUpdateInput): Promise<AssemTask>;
+  advancePhase(input: TaskPhaseAdvanceInput): Promise<AssemTask>;
+  completeCurrentStep(input?: TaskStepCompletionInput): Promise<AssemTask>;
+  attachArtifact(input: TaskArtifactInput): Promise<AssemTask>;
+  ensureArtifact(input: TaskArtifactInput): Promise<AssemTask>;
+  mergeMetadata(metadata: Record<string, unknown>): Promise<AssemTask>;
+  waitIfPaused(): Promise<void>;
+  ensureNotCancelled(): Promise<void>;
+}
+
+export interface TaskStepDefinition {
+  id: string;
+  label: string;
+}
+
+export interface TaskRunner {
+  taskType: TaskType;
+  createTaskInput(
+    request: TaskExecutionRequest
+  ): Omit<TaskCreateInput, 'sessionId' | 'objective'>;
+  selectNextStep?(task: AssemTask): TaskStep | null;
+  executeStep(step: TaskStep, context: TaskExecutionContext): Promise<void>;
+  buildExecutionResult(task: AssemTask): Promise<TaskExecutionResult>;
+}
+
+export interface TaskManagerStateSnapshot {
+  activeTask: AssemTask | null;
+  tasks: AssemTask[];
+}
+
+export interface TaskManagerEvent {
+  type: TaskTelemetryEventType;
+  task: AssemTask;
+  timestamp: string;
+  detail?: string;
+}
+
+export interface TaskManager {
+  createTask(input: TaskCreateInput): Promise<AssemTask>;
+  getTask(taskId: string): Promise<AssemTask | null>;
+  listTasks(sessionId?: string): Promise<AssemTask[]>;
+  getActiveTaskForSession(sessionId: string): Promise<AssemTask | null>;
+  updateTaskProgress(
+    taskId: string,
+    input: TaskProgressUpdateInput
+  ): Promise<AssemTask>;
+  advanceTaskPhase(
+    taskId: string,
+    input: TaskPhaseAdvanceInput
+  ): Promise<AssemTask>;
+  completeCurrentStep(taskId: string, input?: TaskStepCompletionInput): Promise<AssemTask>;
+  attachArtifact(taskId: string, input: TaskArtifactInput): Promise<AssemTask>;
+  pauseTask(taskId: string, reason?: string): Promise<AssemTask>;
+  resumeTask(taskId: string): Promise<AssemTask>;
+  cancelTask(taskId: string, reason?: string): Promise<AssemTask>;
+  completeTask(taskId: string): Promise<AssemTask>;
+  failTask(taskId: string, reason: string): Promise<AssemTask>;
+}
+
+export interface TaskRuntime {
+  createTask(request: TaskExecutionRequest): Promise<AssemTask>;
+  startTask(taskId: string): Promise<AssemTask>;
+  pauseTask(taskId: string, reason?: string): Promise<AssemTask>;
+  resumeTask(taskId: string): Promise<AssemTask>;
+  cancelTask(taskId: string, reason?: string): Promise<AssemTask>;
+  recoverTasksOnStartup(): Promise<void>;
+}
+
+export interface TaskInterruptHandler {
+  classify(request: TaskInterruptRequest): TaskInterruptClassification;
+}
+
+export interface TaskPlanner {
+  createPlan(context: TaskPlanningContext): TaskPlanResult;
+  refinePlan(task: AssemTask, refinement: TaskRefinement): TaskPlanResult;
+}
+
 export interface SessionSnapshot {
   sessionId: string;
   createdAt: string;
@@ -558,6 +955,7 @@ export interface SystemStateSnapshot {
   session: SessionSnapshot | null;
   health: AgentHealthSnapshot;
   providerRuntime: ProviderRuntimeStatus;
+  taskManager: TaskManagerStateSnapshot;
   voice: VoiceSystemState;
   profiles: ProfileSummary[];
   activeProfile: ProfileSummary | null;
@@ -666,6 +1064,32 @@ export interface SchedulerTaskResponse {
 
 export interface SchedulerRunResponse {
   run: ScheduledTaskRun;
+}
+
+export interface TasksResponse {
+  tasks: AssemTask[];
+}
+
+export interface TaskResponse {
+  task: AssemTask | null;
+}
+
+export interface ActiveTaskResponse {
+  sessionId: string;
+  task: AssemTask | null;
+}
+
+export interface TaskPlanResponse {
+  taskId: string;
+  plan: TaskPlan | null;
+}
+
+export interface TaskCreateResponse {
+  task: AssemTask;
+}
+
+export interface TaskExecutionResponse {
+  task: AssemTask;
 }
 
 export interface LocalFileInput {

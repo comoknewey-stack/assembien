@@ -15,6 +15,7 @@ import {
 } from '@assem/memory';
 import { ModelRouter } from '@assem/model-router';
 import { AssemOrchestrator } from '@assem/orchestrator';
+import { DeterministicTaskPlanner } from '@assem/planner';
 import { ensureDirectory } from '@assem/persistence';
 import { PolicyEngine } from '@assem/policy-engine';
 import { DemoLocalModelProvider } from '@assem/provider-demo-local';
@@ -22,6 +23,7 @@ import { OllamaModelProvider } from '@assem/provider-ollama';
 import { BasicScheduler } from '@assem/scheduler';
 import type {
   ActionHistoryResponse,
+  ActiveTaskResponse,
   AgentHealthSnapshot,
   ChatRequest,
   ModeUpdateRequest,
@@ -34,12 +36,27 @@ import type {
   ScheduledTask,
   ScheduledTaskInput,
   SystemStateSnapshot,
+  TaskArtifactInput,
+  TaskCreateInput,
+  TaskCreateResponse,
+  TaskExecutionRequest,
+  TaskExecutionResponse,
+  TaskManagerEvent,
+  TaskPhaseAdvanceInput,
+  TaskPlanResponse,
+  TaskProgressUpdateInput,
+  TaskResponse,
+  TaskRuntimeEvent,
+  TasksResponse,
+  TelemetryRecord,
   TelemetrySink,
   VoiceRecordingRequest,
   VoiceRecordingStopRequest,
   VoiceSettingsUpdateRequest,
   VoiceSpeakRequest
 } from '@assem/shared-types';
+import { FileTaskManager } from '@assem/task-manager';
+import { TaskRuntimeExecutor } from '@assem/task-runtime';
 import { FileTelemetrySink } from '@assem/telemetry';
 import { ToolRegistry } from '@assem/tool-registry';
 
@@ -64,6 +81,38 @@ function sanitizeErrorMessage(message: string): string {
   return message
     .replace(/sk-[a-zA-Z0-9_-]{10,}/g, '[redacted-secret]')
     .replace(/Bearer\s+[a-zA-Z0-9._-]+/gi, 'Bearer [redacted]');
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function resolveTaskRuntimeInvocation(
+  metadata: Record<string, unknown> | undefined
+): {
+  providerId?: string;
+  model?: string;
+  fallbackUsed?: boolean;
+  fallbackReason?: string;
+} {
+  if (!metadata || !isObjectRecord(metadata.runtimeModelInvocation)) {
+    return {};
+  }
+
+  const invocation = metadata.runtimeModelInvocation;
+  return {
+    providerId:
+      typeof invocation.providerId === 'string' ? invocation.providerId : undefined,
+    model: typeof invocation.model === 'string' ? invocation.model : undefined,
+    fallbackUsed:
+      typeof invocation.fallbackUsed === 'boolean'
+        ? invocation.fallbackUsed
+        : undefined,
+    fallbackReason:
+      typeof invocation.fallbackReason === 'string'
+        ? invocation.fallbackReason
+        : undefined
+  };
 }
 
 function json<T>(value: T): string {
@@ -139,6 +188,7 @@ async function main() {
   const paths = createSessionStorePaths(config.dataRoot);
   const telemetryFilePath = path.join(config.dataRoot, 'telemetry.jsonl');
   const schedulerFilePath = path.join(config.dataRoot, 'scheduler.json');
+  const taskManagerFilePath = path.join(config.dataRoot, 'tasks.json');
   const voiceSettingsFilePath = path.join(config.dataRoot, 'voice-settings.json');
 
   const toolRegistry = new ToolRegistry();
@@ -159,6 +209,44 @@ async function main() {
   );
   const memoryBackend = new FileProfileMemoryBackend(paths.profilesFilePath);
   const telemetry: TelemetrySink = new FileTelemetrySink(telemetryFilePath);
+  let notifySystemStateChanged = async () => {};
+  const taskManager = new FileTaskManager(taskManagerFilePath, {
+    onEvent: async (event: TaskManagerEvent) => {
+      const session = await sessionStore.getSession(event.task.sessionId);
+      const result =
+        event.type === 'task_failed'
+          ? 'error'
+          : event.type === 'task_cancelled'
+            ? 'rejected'
+            : 'success';
+      const record: TelemetryRecord = {
+        id: crypto.randomUUID(),
+        timestamp: event.timestamp,
+        sessionId: event.task.sessionId,
+        providerId: 'task-manager',
+        model: 'task-manager',
+        channel: 'task_manager',
+        privacyMode: session?.activeMode.privacy ?? 'local_only',
+        runtimeMode: session?.activeMode.runtime ?? 'sandbox',
+        totalDurationMs: 0,
+        toolsUsed: [],
+        confirmationRequired: false,
+        result,
+        errorMessage:
+          event.type === 'task_failed'
+            ? event.task.failureReason ?? event.detail
+            : undefined,
+        toolCount: 0,
+        messagePreview: event.task.objective,
+        eventType: event.type,
+        taskId: event.task.id,
+        taskStatus: event.task.status
+      };
+
+      await telemetry.record(record);
+      await notifySystemStateChanged();
+    }
+  });
   const modelRouter = new ModelRouter(
     [
       new OllamaModelProvider({
@@ -174,6 +262,58 @@ async function main() {
     }
   );
   const actionLog = new ActionLogService();
+  const planner = new DeterministicTaskPlanner();
+  const taskRuntime = new TaskRuntimeExecutor(
+    {
+      taskManager,
+      sessionStore,
+      memoryBackend,
+      toolRegistry,
+      modelRouter,
+      sandboxRoot: config.sandboxRoot,
+      dataRoot: config.dataRoot
+    },
+    {
+      onEvent: async (event: TaskRuntimeEvent) => {
+        const session = await sessionStore.getSession(event.task.sessionId);
+        const invocation = resolveTaskRuntimeInvocation(event.task.metadata);
+        const result =
+          event.type === 'task_execution_failed'
+            ? 'error'
+            : event.type === 'task_execution_cancelled'
+              ? 'rejected'
+              : 'success';
+        const record: TelemetryRecord = {
+          id: crypto.randomUUID(),
+          timestamp: event.timestamp,
+          sessionId: event.task.sessionId,
+          providerId: invocation.providerId ?? 'task-runtime',
+          model: invocation.model ?? 'task-runtime',
+          channel: 'task_runtime',
+          privacyMode: session?.activeMode.privacy ?? 'local_only',
+          runtimeMode: session?.activeMode.runtime ?? 'sandbox',
+          totalDurationMs: 0,
+          toolsUsed: [],
+          confirmationRequired: false,
+          result,
+          errorMessage:
+            event.type === 'task_execution_failed'
+              ? event.task.failureReason ?? event.detail
+              : undefined,
+          toolCount: 0,
+          messagePreview: event.task.objective,
+          fallbackUsed: invocation.fallbackUsed,
+          fallbackReason: invocation.fallbackReason,
+          eventType: event.type,
+          taskId: event.task.id,
+          taskStatus: event.task.status
+        };
+
+        await telemetry.record(record);
+        await notifySystemStateChanged();
+      }
+    }
+  );
 
   const orchestrator = new AssemOrchestrator({
     config,
@@ -183,7 +323,9 @@ async function main() {
     policyEngine: new PolicyEngine(),
     modelRouter,
     memoryBackend,
-    telemetry
+    telemetry,
+    taskManager,
+    taskRuntime
   });
 
   const scheduler = new BasicScheduler(
@@ -296,11 +438,19 @@ async function main() {
       : null;
     const activeProfile = await memoryBackend.getActiveProfile();
     const health = await buildHealthSnapshot();
+    const taskManagerTasks = await taskManager.listTasks(sessionId ?? undefined);
+    const activeTask = sessionId
+      ? await taskManager.getActiveTaskForSession(sessionId)
+      : null;
 
     return {
       session,
       health,
       providerRuntime: buildProviderRuntime(sessionId, health, session),
+      taskManager: {
+        activeTask,
+        tasks: taskManagerTasks
+      },
       voice: (await voiceController.getState(sessionId)).voice,
       profiles: await memoryBackend.listProfiles(),
       activeProfile: activeProfile ? summarizeProfile(activeProfile) : null,
@@ -338,6 +488,10 @@ async function main() {
       }
     }
   }
+
+  notifySystemStateChanged = async () => {
+    await broadcastSystemState();
+  };
 
   async function recordSchedulerRunInSession(
     sessionId: string | undefined,
@@ -395,6 +549,7 @@ async function main() {
       await broadcastSystemState();
     }
   });
+  await taskRuntime.recoverTasksOnStartup();
   await voiceController.initialize();
 
   const server = createServer(async (request, response) => {
@@ -730,6 +885,234 @@ async function main() {
         writeJson(request, response, 200, {
           telemetry: await telemetry.list(limit)
         });
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/tasks') {
+        const payload: TasksResponse = {
+          tasks: await taskManager.listTasks(url.searchParams.get('sessionId') ?? undefined)
+        };
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'GET' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'plan'
+      ) {
+        const task = await taskManager.getTask(segments[2]);
+        const payload: TaskPlanResponse = {
+          taskId: segments[2],
+          plan: task?.plan ?? null
+        };
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/api/tasks/active') {
+        const sessionId = getRequiredSessionId(url);
+        const payload: ActiveTaskResponse = {
+          sessionId,
+          task: await taskManager.getActiveTaskForSession(sessionId)
+        };
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/tasks/runtime') {
+        const body = await readJson<TaskExecutionRequest>(request);
+        const session = await sessionStore.getSession(body.sessionId);
+        if (!session) {
+          throw new Error(`Unknown session: ${body.sessionId}`);
+        }
+
+        const plannedTask:
+          | { accepted: true; plan: NonNullable<TaskExecutionRequest['plan']>; clarificationMessage?: undefined; reason?: undefined }
+          | ReturnType<typeof planner.createPlan> =
+          body.plan
+            ? { accepted: true, plan: body.plan }
+            : planner.createPlan({
+                session,
+                text: body.objective,
+                objective: body.objective,
+                requestedTaskType: body.taskType
+              });
+
+        if (!plannedTask.plan) {
+          throw new Error(
+            plannedTask.clarificationMessage ??
+              plannedTask.reason ??
+              'Planner v1 no pudo preparar un plan real para esta tarea runtime.'
+          );
+        }
+
+        const payload: TaskExecutionResponse = {
+          task: await taskRuntime.createTask({
+            ...body,
+            plan: plannedTask.plan
+          })
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/tasks') {
+        const body = await readJson<TaskCreateInput>(request);
+        const session = await sessionStore.getSession(body.sessionId);
+        if (!session) {
+          throw new Error(`Unknown session: ${body.sessionId}`);
+        }
+
+        const payload: TaskCreateResponse = {
+          task: await taskManager.createTask(body)
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'start'
+      ) {
+        const payload: TaskResponse = {
+          task: await taskRuntime.startTask(segments[2])
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'progress'
+      ) {
+        const body = await readJson<TaskProgressUpdateInput>(request);
+        const payload: TaskResponse = {
+          task: await taskManager.updateTaskProgress(segments[2], body)
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'phase'
+      ) {
+        const body = await readJson<TaskPhaseAdvanceInput>(request);
+        const payload: TaskResponse = {
+          task: await taskManager.advanceTaskPhase(segments[2], body)
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'artifacts'
+      ) {
+        const body = await readJson<TaskArtifactInput>(request);
+        const payload: TaskResponse = {
+          task: await taskManager.attachArtifact(segments[2], body)
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'pause'
+      ) {
+        const body = await readJson<{ reason?: string }>(request);
+        const payload: TaskResponse = {
+          task: await taskRuntime.pauseTask(segments[2], body.reason)
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'resume'
+      ) {
+        const payload: TaskResponse = {
+          task: await taskRuntime.resumeTask(segments[2])
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'cancel'
+      ) {
+        const body = await readJson<{ reason?: string }>(request);
+        const payload: TaskResponse = {
+          task: await taskRuntime.cancelTask(segments[2], body.reason)
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'complete'
+      ) {
+        const payload: TaskResponse = {
+          task: await taskManager.completeTask(segments[2])
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
+        return;
+      }
+
+      if (
+        request.method === 'POST' &&
+        segments.length === 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'tasks' &&
+        segments[3] === 'fail'
+      ) {
+        const body = await readJson<{ reason: string }>(request);
+        const payload: TaskResponse = {
+          task: await taskManager.failTask(segments[2], body.reason)
+        };
+        await broadcastSystemState();
+        writeJson(request, response, 200, payload);
         return;
       }
 

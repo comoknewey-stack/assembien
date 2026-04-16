@@ -1,5 +1,6 @@
 import type {
   ActionHistoryResponse,
+  ActiveTaskResponse,
   ChatRequest,
   ChatResponse,
   CreateSessionResponse,
@@ -22,6 +23,16 @@ import type {
   SessionResponse,
   SystemStateResponse,
   SystemStateSnapshot,
+  TaskArtifactInput,
+  TaskCreateInput,
+  TaskCreateResponse,
+  TaskExecutionRequest,
+  TaskExecutionResponse,
+  TaskPlanResponse,
+  TaskPhaseAdvanceInput,
+  TaskProgressUpdateInput,
+  TaskResponse,
+  TasksResponse,
   LocalFileInput,
   VoiceRecordingRequest,
   VoiceRecordingStopRequest,
@@ -234,6 +245,113 @@ export class AssemClient {
   async resetProfile(profileId: string): Promise<ProfileResponse> {
     return this.request<ProfileResponse>(`/api/profiles/${profileId}/reset`, {
       method: 'POST'
+    });
+  }
+
+  async listTasks(sessionId?: string): Promise<TasksResponse> {
+    const suffix = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+    return this.request<TasksResponse>(`/api/tasks${suffix}`, {
+      method: 'GET'
+    });
+  }
+
+  async getActiveTask(sessionId: string): Promise<ActiveTaskResponse> {
+    return this.request<ActiveTaskResponse>(
+      `/api/tasks/active?sessionId=${encodeURIComponent(sessionId)}`,
+      {
+        method: 'GET'
+      }
+    );
+  }
+
+  async getTaskPlan(taskId: string): Promise<TaskPlanResponse> {
+    return this.request<TaskPlanResponse>(`/api/tasks/${taskId}/plan`, {
+      method: 'GET'
+    });
+  }
+
+  async createTask(input: TaskCreateInput): Promise<TaskCreateResponse> {
+    return this.request<TaskCreateResponse>('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
+  }
+
+  async createRuntimeTask(
+    request: TaskExecutionRequest
+  ): Promise<TaskExecutionResponse> {
+    return this.request<TaskExecutionResponse>('/api/tasks/runtime', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async updateTaskProgress(
+    taskId: string,
+    input: TaskProgressUpdateInput
+  ): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/progress`, {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
+  }
+
+  async advanceTaskPhase(
+    taskId: string,
+    input: TaskPhaseAdvanceInput
+  ): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/phase`, {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
+  }
+
+  async attachTaskArtifact(
+    taskId: string,
+    input: TaskArtifactInput
+  ): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify(input)
+    });
+  }
+
+  async pauseTask(taskId: string, reason?: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/pause`, {
+      method: 'POST',
+      body: JSON.stringify({ reason })
+    });
+  }
+
+  async startTask(taskId: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/start`, {
+      method: 'POST'
+    });
+  }
+
+  async resumeTask(taskId: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/resume`, {
+      method: 'POST'
+    });
+  }
+
+  async cancelTask(taskId: string, reason?: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason })
+    });
+  }
+
+  async completeTask(taskId: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/complete`, {
+      method: 'POST'
+    });
+  }
+
+  async failTask(taskId: string, reason: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/tasks/${taskId}/fail`, {
+      method: 'POST',
+      body: JSON.stringify({ reason })
     });
   }
 

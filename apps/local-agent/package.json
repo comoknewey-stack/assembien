@@ -16,12 +16,15 @@
     "@assem/memory": "0.1.0",
     "@assem/model-router": "0.1.0",
     "@assem/orchestrator": "0.1.0",
+    "@assem/planner": "0.1.0",
     "@assem/persistence": "0.1.0",
     "@assem/policy-engine": "0.1.0",
     "@assem/provider-demo-local": "0.1.0",
     "@assem/provider-ollama": "0.1.0",
     "@assem/scheduler": "0.1.0",
     "@assem/shared-types": "0.1.0",
+    "@assem/task-manager": "0.1.0",
+    "@assem/task-runtime": "0.1.0",
     "@assem/telemetry": "0.1.0",
     "@assem/tool-registry": "0.1.0"
   }

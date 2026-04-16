@@ -12,9 +12,13 @@ import { FileProfileMemoryBackend, InMemorySessionStore } from '@assem/memory';
 import { ModelRouter } from '@assem/model-router';
 import { PolicyEngine } from '@assem/policy-engine';
 import { DemoLocalModelProvider } from '@assem/provider-demo-local';
+import { InMemoryTaskManager } from '@assem/task-manager';
 import type {
+  AssemTask,
   AssemConfig,
   ModelRouter as ModelRouterContract,
+  TaskExecutionRequest,
+  TaskRuntime as TaskRuntimeContract,
   TelemetryRecord,
   TelemetrySink,
   TelemetrySummary
@@ -87,6 +91,21 @@ function countTelemetryToolUses(
   return telemetry.records.filter((record) => record.toolsUsed.includes(toolId)).length;
 }
 
+function extractTaskRefinementLabels(task: AssemTask | null | undefined): string[] {
+  const refinements =
+    (task?.metadata as
+      | {
+          interruptState?: {
+            refinements?: Array<{ label?: string }>;
+          };
+        }
+      | undefined)?.interruptState?.refinements ?? [];
+
+  return refinements
+    .map((refinement) => refinement.label)
+    .filter((label): label is string => typeof label === 'string');
+}
+
 class InMemoryTelemetrySink implements TelemetrySink {
   readonly records: TelemetryRecord[] = [];
 
@@ -115,6 +134,64 @@ class InMemoryTelemetrySink implements TelemetrySink {
   }
 }
 
+class TestTaskRuntime implements TaskRuntimeContract {
+  constructor(private readonly taskManager: InMemoryTaskManager) {}
+
+  async createTask(request: TaskExecutionRequest): Promise<AssemTask> {
+    return this.taskManager.createTask({
+      sessionId: request.sessionId,
+      objective: request.objective,
+      status: request.autoStart === false ? 'pending' : 'active',
+      progressPercent: 0,
+      currentPhase:
+        request.plan?.phases[0]?.label ?? 'Preparando la tarea',
+      steps:
+        request.plan?.steps.map((step) => ({
+          id: step.id,
+          label: step.label
+        })) ?? [
+          {
+            id: 'step-prepare',
+            label: 'Preparar la tarea'
+          },
+          {
+            id: 'step-draft',
+            label: 'Redactar el informe'
+          }
+        ],
+      currentStepId: request.plan?.steps[0]?.id ?? 'step-prepare',
+      plan: request.plan,
+      metadata: {
+        ...(request.metadata ?? {}),
+        taskType: request.taskType,
+        interruptState: {
+          refinements: request.plan?.refinements ?? []
+        }
+      }
+    });
+  }
+
+  async startTask(taskId: string): Promise<AssemTask> {
+    return this.taskManager.resumeTask(taskId);
+  }
+
+  async pauseTask(taskId: string, reason?: string): Promise<AssemTask> {
+    return this.taskManager.pauseTask(taskId, reason);
+  }
+
+  async resumeTask(taskId: string): Promise<AssemTask> {
+    return this.taskManager.resumeTask(taskId);
+  }
+
+  async cancelTask(taskId: string, reason?: string): Promise<AssemTask> {
+    return this.taskManager.cancelTask(taskId, reason);
+  }
+
+  async recoverTasksOnStartup(): Promise<void> {
+    return;
+  }
+}
+
 interface TestOrchestratorOptions {
   configOverrides?: Partial<AssemConfig>;
   modelRouter?: ModelRouterContract;
@@ -130,6 +207,8 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
   const toolRegistry = new ToolRegistry();
   const calendarTools = createCalendarTools();
   const localFilesTools = createLocalFilesTools();
+  const taskManager = new InMemoryTaskManager();
+  const taskRuntime = new TestTaskRuntime(taskManager);
 
   toolRegistry.register(createClockTimeTool());
   toolRegistry.register(localFilesTools[0]);
@@ -144,6 +223,7 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
   });
 
   return {
+    taskManager,
     orchestrator: new AssemOrchestrator({
       config: {
         appName: 'ASSEM',
@@ -173,7 +253,9 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
         options.modelRouter ??
         new ModelRouter([new DemoLocalModelProvider()], 'demo-local'),
       memoryBackend: profileBackend,
-      telemetry
+      telemetry,
+      taskManager,
+      taskRuntime
     }),
     sandboxRoot,
     telemetry
@@ -853,6 +935,342 @@ describe('AssemOrchestrator', () => {
       relativePath: 'patata.txt'
     });
     expect(replacementSnapshot.messages.at(-1)?.content).toContain('Esperando confirmacion');
+  });
+
+  it('reports clearly when there is no active task in the session', async () => {
+    const { orchestrator } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const statusSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que estas haciendo'
+    });
+    const pauseSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'pausa'
+    });
+
+    expect(getLastAssistantMessage(statusSnapshot)).toContain(
+      'No hay ninguna tarea activa en esta sesion.'
+    );
+    expect(getLastAssistantMessage(pauseSnapshot)).toContain(
+      'No hay ninguna tarea activa en esta sesion.'
+    );
+  });
+
+  it('creates an active task from chat and reports its real status', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const createdSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'abre una tarea para preparar el informe semanal'
+    });
+    const createdMessage = getLastAssistantMessage(createdSnapshot);
+    const activeTask = await taskManager.getActiveTaskForSession(session.sessionId);
+    const statusSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que estas haciendo'
+    });
+    const statusMessage = getLastAssistantMessage(statusSnapshot);
+
+    expect(createdMessage).toContain('He abierto una nueva tarea activa');
+    expect(activeTask?.objective).toBe('preparar el informe semanal');
+    expect(statusMessage).toContain('preparar el informe semanal');
+    expect(statusMessage).toContain('Preparar workspace local');
+  });
+
+  it('creates a planned research task from "hazme un informe sobre X" and can answer with the real plan', async () => {
+    const { orchestrator, taskManager, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const createdSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'hazme un informe sobre riesgos operativos'
+    });
+    const createdMessage = getLastAssistantMessage(createdSnapshot);
+    const activeTask = await taskManager.getActiveTaskForSession(session.sessionId);
+    const planSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'cual es el plan'
+    });
+
+    expect(createdMessage).toContain('He abierto una nueva tarea activa');
+    expect(activeTask?.plan?.taskType).toBe('research_report_basic');
+    expect(activeTask?.plan?.steps.map((step) => step.id)).toEqual([
+      'prepare-workspace',
+      'draft-report',
+      'write-report',
+      'write-summary'
+    ]);
+    expect(getLastAssistantMessage(planSnapshot)).toContain('research_report_basic');
+    expect(getLastAssistantMessage(planSnapshot)).toContain(
+      'Preparar carpeta de trabajo'
+    );
+    expect(
+      telemetry.records.some((record) => record.eventType === 'task_plan_created')
+    ).toBe(true);
+    expect(
+      telemetry.records.some((record) => record.eventType === 'task_plan_applied')
+    ).toBe(true);
+  });
+
+  it('rejects unsupported open tasks honestly instead of inventing a plan', async () => {
+    const { orchestrator, taskManager, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'abre una tarea para organizar archivos del proyecto'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('research_report_basic');
+    expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
+    expect(
+      telemetry.records.some((record) => record.eventType === 'task_plan_rejected')
+    ).toBe(true);
+  });
+
+  it('answers progress, phase and pause-resume-cancel commands from the real task state', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe semanal',
+      status: 'active',
+      progressPercent: 35,
+      currentPhase: 'Recopilando notas',
+      steps: [
+        {
+          id: 'step-collect',
+          label: 'Recopilar notas'
+        }
+      ],
+      currentStepId: 'step-collect'
+    });
+
+    const progressSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'cuanto te queda'
+    });
+    const progressMessage = getLastAssistantMessage(progressSnapshot);
+    const stepSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'en que vas'
+    });
+    const stepMessage = getLastAssistantMessage(stepSnapshot);
+    const pausedSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'pausa'
+    });
+    const pausedMessage = getLastAssistantMessage(pausedSnapshot);
+    const pausedStatus = (await taskManager.getTask(task.id))?.status;
+    const resumedSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'reanuda'
+    });
+    const resumedMessage = getLastAssistantMessage(resumedSnapshot);
+    const resumedStatus = (await taskManager.getTask(task.id))?.status;
+    const cancelledSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'cancela'
+    });
+    const cancelledMessage = getLastAssistantMessage(cancelledSnapshot);
+
+    expect(progressMessage).toContain('35%');
+    expect(progressMessage).toContain('65%');
+    expect(stepMessage).toContain('Recopilar notas');
+    expect(pausedMessage).toContain('He pausado la tarea');
+    expect(pausedStatus).toBe('paused');
+    expect(resumedMessage).toContain('He reanudado la tarea');
+    expect(resumedStatus).toBe('active');
+    expect(cancelledMessage).toContain('He cancelado la tarea');
+    expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
+  });
+
+  it('keeps the active task intact while answering an independent question like "que hora es"', async () => {
+    const { orchestrator, taskManager, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe semanal',
+      status: 'active',
+      progressPercent: 35,
+      currentPhase: 'Recopilando notas',
+      steps: [
+        {
+          id: 'step-collect',
+          label: 'Recopilar notas'
+        }
+      ],
+      currentStepId: 'step-collect',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que hora es'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Son las');
+    expect((await taskManager.getActiveTaskForSession(session.sessionId))?.id).toBe(
+      task.id
+    );
+    expect(
+      telemetry.records.some(
+        (record) => record.eventType === 'task_interrupt_independent_query'
+      )
+    ).toBe(true);
+  });
+
+  it('stores a simple refinement for "hazlo más corto" on the active task', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe semanal',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Generando borrador',
+      steps: [
+        {
+          id: 'prepare-workspace',
+          label: 'Preparar carpeta'
+        },
+        {
+          id: 'draft-report',
+          label: 'Generar borrador'
+        }
+      ],
+      currentStepId: 'draft-report',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'hazlo más corto'
+    });
+    const updatedTask = await taskManager.getTask(task.id);
+
+    expect(getLastAssistantMessage(snapshot)).toContain('mas corto');
+    expect(extractTaskRefinementLabels(updatedTask)).toContain('Salida mas corta');
+    expect(updatedTask?.plan?.restrictions.join(' ')).toContain('Longitud de salida');
+  });
+
+  it('stores a language refinement for "hazlo en inglés" on the active task', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe semanal',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Generando borrador',
+      steps: [
+        {
+          id: 'prepare-workspace',
+          label: 'Preparar carpeta'
+        },
+        {
+          id: 'draft-report',
+          label: 'Generar borrador'
+        }
+      ],
+      currentStepId: 'draft-report',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'hazlo en inglés'
+    });
+    const updatedTask = await taskManager.getTask(task.id);
+
+    expect(getLastAssistantMessage(snapshot)).toContain('ingles');
+    expect(extractTaskRefinementLabels(updatedTask)).toContain('Salida en ingles');
+    expect(updatedTask?.plan?.restrictions.join(' ')).toContain('Idioma de salida');
+  });
+
+  it('reorders the pending plan when the user says "primero dame un resumen"', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe semanal',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Generando borrador',
+      steps: [
+        {
+          id: 'prepare-workspace',
+          label: 'Preparar carpeta'
+        },
+        {
+          id: 'draft-report',
+          label: 'Generar borrador'
+        },
+        {
+          id: 'write-report',
+          label: 'Guardar informe'
+        },
+        {
+          id: 'write-summary',
+          label: 'Guardar resumen'
+        }
+      ],
+      currentStepId: 'draft-report',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+
+    await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'primero dame un resumen'
+    });
+    const updatedTask = await taskManager.getTask(task.id);
+
+    expect(updatedTask?.plan?.steps.map((step) => step.id)).toEqual([
+      'prepare-workspace',
+      'draft-report',
+      'write-summary',
+      'write-report'
+    ]);
+  });
+
+  it('asks for clarification when the user says "eso no era lo que quería"', async () => {
+    const { orchestrator, taskManager, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe semanal',
+      status: 'active',
+      currentPhase: 'Generando borrador',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'eso no era lo que quería'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('que cambio quieres');
+    expect((await taskManager.getActiveTaskForSession(session.sessionId))?.id).toBe(
+      task.id
+    );
+    expect(
+      telemetry.records.some(
+        (record) => record.eventType === 'task_interrupt_clarification'
+      )
+    ).toBe(true);
   });
 
   it('records provider, model and fallback details in telemetry when the router falls back', async () => {

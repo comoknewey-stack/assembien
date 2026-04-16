@@ -11,7 +11,13 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
   - local transcript routed into the current chat session
   - optional auto-read for assistant replies
   - manual speak/stop controls for the latest assistant response
-- Persistent sessions, action history, profile memory, scheduler state and telemetry.
+- Planner v1 for supported open tasks:
+  - classify a supported objective
+  - create a short persisted plan
+  - attach real phases, steps and expected artifacts before runtime execution
+- Task Manager v1 plus Task Runtime / Executor v1 with one persisted active task per session, real phase execution, artifact registration and deterministic chat answers for status, progress, pause, resume and cancel.
+- Interrupt Handler v1 to distinguish active-task control, active-task refinements, clarifications and independent questions without losing the running task.
+- Persistent sessions, task state, action history, profile memory, scheduler state and telemetry.
 - Safe privacy/runtime modes:
   - `local_only`
   - `prefer_local`
@@ -19,7 +25,7 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
   - `cloud_allowed`
   - `sandbox`
   - `live`
-- Stable local API for chat, confirmations, overrides, modes, health, profiles and scheduler.
+- Stable local API for chat, task state, confirmations, overrides, modes, health, profiles and scheduler.
 - Local telemetry stored separately from the action log.
 - Local tools for:
   - current time
@@ -51,6 +57,10 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
 - `packages/model-router`: provider selection, timeout and fallback logic.
 - `packages/policy-engine`: confirmation policy and temporary overrides.
 - `packages/orchestrator`: chat orchestration and tool execution flow.
+- `packages/task-manager`: persisted long-running task state and progress tracking.
+- `packages/planner`: deterministic planning layer for supported long-running tasks.
+- `packages/task-runtime`: background executor that advances persisted tasks through real phases.
+- `packages/interrupt-handler`: deterministic active-task interruption classifier.
 - `packages/scheduler`: safe internal task scheduler.
 - `packages/telemetry`: persistent local telemetry sink.
 - `packages/sdk`: frontend client for the local agent API.
@@ -353,6 +363,7 @@ npm test
 ASSEM persists local state under `ASSEM_DATA_ROOT`:
 
 - `sessions.json`: session snapshots, action history, overrides and session-scoped mock calendar state.
+- `tasks.json`: Task Manager state, active task pointers per session, persisted plan, runtime metadata, progress and artifacts.
 - `profiles.json`: profile memory packs and active profile pointer.
 - `scheduler.json`: scheduled tasks and last run metadata.
 - `telemetry.jsonl`: per-interaction telemetry records.
@@ -398,6 +409,137 @@ Supported operations:
 - import profile
 - reset profile
 
+## Task Manager v1
+
+Task Manager v1 is the local source of truth for long-running work inside a chat session.
+
+Current scope:
+
+- one active task per session
+- local persistence in `tasks.json`
+- real task status, phase, progress percentage and current step
+- basic artifact attachment metadata
+- deterministic task-step completion through `completeCurrentStep`
+- pause, resume, cancel, complete and fail lifecycle operations
+- deterministic chat answers for:
+  - `que estas haciendo`
+  - `cuanto te queda`
+  - `en que vas`
+  - `pausa`
+  - `reanuda`
+  - `cancela`
+
+Supported task states:
+
+- `pending`
+- `active`
+- `paused`
+- `blocked`
+- `completed`
+- `failed`
+- `cancelled`
+
+What it does not do yet:
+
+- advanced planning
+- multiple concurrent active tasks in the same session
+- autonomous worker delegation
+- browser or desktop automation
+
+## Planner v1
+
+Planner v1 is the first planning layer above Task Manager and before Task Runtime.
+
+Current scope:
+
+- supported task type: `research_report_basic`
+- detect supported open requests such as:
+  - `hazme un informe sobre X`
+  - `abre una tarea para preparar el informe semanal`
+  - `prepare a report about X`
+- create a persisted plan before runtime execution starts
+- keep the plan honest to current runtime capabilities:
+  - prepare local workspace
+  - generate initial draft
+  - write `report.md`
+  - write `summary.txt`
+- answer plan questions such as:
+  - `cual es el plan`
+  - `que pasos vas a seguir`
+
+What it does not do yet:
+
+- generic planning for arbitrary objectives
+- browser or desktop automation plans
+- advanced re-planning after every step
+- multiple runtime task types beyond `research_report_basic`
+
+## Task Runtime / Executor v1
+
+Task Runtime / Executor v1 is the execution layer that moves Task Manager state forward with real work.
+
+Current scope:
+
+- first real runtime task type: `research_report_basic`
+- non-blocking background execution from the local agent
+- real phases and steps:
+  - prepare workspace
+  - generate draft report
+  - write `report.md`
+  - write `summary.txt`
+- artifact registration in the Task Manager store
+- pause, resume and cancel routed through the runtime executor
+- restart-safe behavior:
+  - persisted `active` runtime tasks are paused on startup
+  - ASSEM does not invent a magic resume after restart
+  - the task can be resumed manually from the last safe step
+
+What it does not do yet:
+
+- planner-generated execution plans
+- multiple runtime task types
+- browser or desktop automation
+- autonomous sub-agents
+- checkpointed mid-step resume
+
+## Interrupt Handler v1
+
+Interrupt Handler v1 is the layer that decides, when there is an active task, whether a new user message is:
+
+- a real status query
+- a pause/resume/cancel control
+- an output refinement
+- a goal correction
+- a clarification request
+- or an independent query outside the task
+
+Current interrupt categories:
+
+- `task_status_query`
+- `task_pause`
+- `task_resume`
+- `task_cancel`
+- `task_goal_refinement`
+- `task_output_refinement`
+- `task_clarification_needed`
+- `independent_query`
+
+Current refinements supported:
+
+- `hazlo mas corto`
+- `hazlo en ingles`
+- `hazlo en espanol`
+- `primero dame un resumen`
+- `anade una tabla`
+- simple focus changes such as `cambia el enfoque a riesgos`
+
+Current behavior limits:
+
+- refinements only affect future compatible steps
+- they do not magically rewrite already completed work
+- compatible refinements also update the persisted plan for the active task
+- vague corrections like `eso no era lo que queria` trigger a short clarification instead of silent destructive changes
+
 ## Scheduler
 
 The scheduler supports:
@@ -436,6 +578,20 @@ Main routes:
 - `POST /api/voice/recording/cancel`
 - `POST /api/voice/speak`
 - `POST /api/voice/stop-speaking`
+- `GET /api/tasks`
+- `GET /api/tasks/:id/plan`
+- `GET /api/tasks/active`
+- `POST /api/tasks`
+- `POST /api/tasks/runtime`
+- `POST /api/tasks/:id/start`
+- `POST /api/tasks/:id/progress`
+- `POST /api/tasks/:id/phase`
+- `POST /api/tasks/:id/artifacts`
+- `POST /api/tasks/:id/pause`
+- `POST /api/tasks/:id/resume`
+- `POST /api/tasks/:id/cancel`
+- `POST /api/tasks/:id/complete`
+- `POST /api/tasks/:id/fail`
 - `GET /api/mode`
 - `POST /api/mode`
 - `GET /api/overrides`
@@ -494,6 +650,10 @@ Detailed Ollama instructions are documented in [docs/ollama-local-setup.md](docs
 - Whisper now performs a cheap real self-check with a generated WAV probe before reporting itself ready.
 - The agent cleans stale `voice-temp/session-*` directories on startup and cleans old `sessions.json.*.tmp`-style leftovers in the JSON persistence layer.
 - The local third-party voice runtime folder `.assem-runtime/` is intentionally ignored from Git because it contains downloaded binaries and models, not ASSEM source code.
+- Planner owns task structure; Runtime executes that structure; Task Manager persists both the plan and the execution state.
+- Task Manager owns task status/progress answers; the model does not invent percentages or phases for those queries.
+- Task Runtime owns execution; Task Manager remains the persisted source of truth for task status, phase, progress and artifacts.
+- Interrupt Handler decides whether a message should control or refine the active task before the request falls back to tools or model responses.
 - The router is ready for more providers without changing the UI contract.
 - The local file integration rejects path traversal and writes outside the sandbox root.
 - TypeScript is split into `tsconfig.browser.json` and `tsconfig.node.json`; the Node-side config still uses `moduleResolution: "Bundler"` for the current `tsx` workflow and should be revisited before deeper native/server integrations.
@@ -517,3 +677,7 @@ Detailed Ollama instructions are documented in [docs/ollama-local-setup.md](docs
 - [docs/desktop-voice.md](docs/desktop-voice.md)
 - [docs/local-agent-api.md](docs/local-agent-api.md)
 - [docs/ollama-local-setup.md](docs/ollama-local-setup.md)
+- [docs/planner.md](docs/planner.md)
+- [docs/task-manager.md](docs/task-manager.md)
+- [docs/task-runtime.md](docs/task-runtime.md)
+- [docs/interrupt-handler.md](docs/interrupt-handler.md)

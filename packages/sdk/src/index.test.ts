@@ -88,4 +88,135 @@ describe('AssemClient', () => {
       })
     );
   });
+
+  it('requests the active task for a session through the dedicated endpoint', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        sessionId: 'session-task',
+        task: null
+      })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = new AssemClient('http://localhost:4318');
+
+    await client.getActiveTask('session-task');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:4318/api/tasks/active?sessionId=session-task',
+      expect.objectContaining({
+        method: 'GET'
+      })
+    );
+  });
+
+  it('requests the persisted task plan through the dedicated endpoint', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        taskId: 'task-plan',
+        plan: null
+      })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = new AssemClient('http://localhost:4318');
+
+    await client.getTaskPlan('task-plan');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:4318/api/tasks/task-plan/plan',
+      expect.objectContaining({
+        method: 'GET'
+      })
+    );
+  });
+
+  it('sends task pause requests to the task endpoint', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        task: {
+          id: 'task-1',
+          sessionId: 'session-task',
+          objective: 'Preparar informe',
+          status: 'paused'
+        }
+      })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = new AssemClient('http://localhost:4318');
+
+    await client.pauseTask('task-1', 'Pausa manual');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:4318/api/tasks/task-1/pause',
+      expect.objectContaining({
+        method: 'POST'
+      })
+    );
+  });
+
+  it('creates runtime tasks through the dedicated runtime endpoint', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        task: {
+          id: 'task-runtime-1',
+          sessionId: 'session-task',
+          objective: 'Preparar informe semanal',
+          status: 'active'
+        }
+      })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = new AssemClient('http://localhost:4318');
+
+    await client.createRuntimeTask({
+      sessionId: 'session-task',
+      taskType: 'research_report_basic',
+      objective: 'Preparar informe semanal'
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:4318/api/tasks/runtime',
+      expect.objectContaining({
+        method: 'POST'
+      })
+    );
+  });
+
+  it('starts persisted tasks through the runtime start endpoint', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        task: {
+          id: 'task-runtime-1',
+          sessionId: 'session-task',
+          objective: 'Preparar informe semanal',
+          status: 'active'
+        }
+      })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = new AssemClient('http://localhost:4318');
+
+    await client.startTask('task-runtime-1');
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:4318/api/tasks/task-runtime-1/start',
+      expect.objectContaining({
+        method: 'POST'
+      })
+    );
+  });
 });

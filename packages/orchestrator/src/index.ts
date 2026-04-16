@@ -1,6 +1,8 @@
 import path from 'node:path';
 
 import { probeSandboxEntry } from '@assem/integration-local-files';
+import { DeterministicTaskInterruptHandler } from '@assem/interrupt-handler';
+import { DeterministicTaskPlanner } from '@assem/planner';
 import type {
   ActionLogEntry,
   ActiveMode,
@@ -20,6 +22,7 @@ import type {
   PendingAction,
   PendingActionResolutionRequest,
   ProfileSummary,
+  AssemTask,
   SessionOperationalContext,
   SessionTemporalSnapshot,
   SessionSnapshot,
@@ -33,6 +36,17 @@ import type {
   TemporaryPolicyOverride,
   TemporaryPolicyOverrideInput,
   TimeOutput,
+  TaskCreateInput,
+  TaskInterruptClassification,
+  TaskInterruptHandler as TaskInterruptHandlerContract,
+  TaskInterruptState,
+  TaskManager as TaskManagerContract,
+  TaskPlan,
+  TaskPlanner as TaskPlannerContract,
+  TaskRefinement,
+  TaskRefinementDraft,
+  TaskStatusQueryKind,
+  TaskRuntime as TaskRuntimeContract,
   ToolSummary,
   ToolDefinition,
   ToolRegistry as ToolRegistryContract,
@@ -217,6 +231,96 @@ function isSystemCapabilitiesRequest(text: string): boolean {
 function isAmbiguousSystemRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
   return /^(?:dame la obra que tienes|que tienes|que haces|what do you have|what do you do)$/.test(
+    normalized
+  );
+}
+
+function isTaskCreateRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /\b(?:abre|inicia|crea|empieza|arranca|start|open|create|begin)\b/i.test(
+    normalized
+  ) && /\b(?:tarea|task)\b/i.test(normalized);
+}
+
+function isReportTaskRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /(?:hazme|haz|prepara|crea|redacta|make|create|prepare|write|draft)\b.*\b(?:informe|reporte|report|brief)\b/i.test(
+    normalized
+  );
+}
+
+function isTaskPlanningRequest(text: string): boolean {
+  return isTaskCreateRequest(text) || isReportTaskRequest(text);
+}
+
+function isTaskPlanRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:cual es el plan|cual es tu plan|que plan vas a seguir|que pasos vas a seguir|what is the plan|what steps will you follow)$/.test(
+    normalized
+  );
+}
+
+function extractTaskObjective(text: string): string | null {
+  const quoted = extractQuotedValue(text);
+  if (quoted?.trim()) {
+    return cleanName(quoted.trim(), '');
+  }
+
+  const match =
+    text.match(
+      /(?:abre|inicia|crea|empieza|arranca|start|open|create|begin)\s+(?:una\s+)?(?:nueva\s+)?(?:tarea|task)\s+(?:para|to)\s+(.+)$/i
+    ) ??
+    text.match(
+      /(?:abre|inicia|crea|empieza|arranca|start|open|create|begin)\s+(?:una\s+)?(?:nueva\s+)?(?:tarea|task)\s+(.+)$/i
+    );
+
+  const candidate = cleanName(match?.[1]?.trim() ?? '', '');
+  if (!candidate) {
+    return null;
+  }
+
+  const normalized = normalizeIntentText(candidate);
+  if (/^(?:para|to|nueva|new|tarea|task)$/.test(normalized)) {
+    return null;
+  }
+
+  return candidate;
+}
+
+function isTaskStatusRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:que estas haciendo|que estas haciendo ahora|en que estas|what are you doing|what are you doing now)$/.test(
+    normalized
+  );
+}
+
+function isTaskProgressRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:cuanto te queda|cuanto queda|cuanto falta|progreso|how much is left|how far along are you)$/.test(
+    normalized
+  );
+}
+
+function isTaskStepRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:en que vas|en que paso vas|que paso llevas|what step are you on|what step are you at)$/.test(
+    normalized
+  );
+}
+
+function isTaskPauseRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:pausa|pausalo|pausa la tarea|pause|pause task)$/.test(normalized);
+}
+
+function isTaskResumeRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:reanuda|continua|sigue|resume|continue)$/.test(normalized);
+}
+
+function isTaskCancelRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:cancela|cancela la tarea|cancela tarea|cancel|cancel task|abort task)$/.test(
     normalized
   );
 }
@@ -853,10 +957,21 @@ export interface AssemOrchestratorDeps {
   modelRouter: ModelRouterContract;
   memoryBackend: MemoryBackend;
   telemetry: TelemetrySink;
+  taskManager: TaskManagerContract;
+  taskRuntime: TaskRuntimeContract;
+  interruptHandler?: TaskInterruptHandlerContract;
+  planner?: TaskPlannerContract;
 }
 
 export class AssemOrchestrator {
-  constructor(private readonly deps: AssemOrchestratorDeps) {}
+  private readonly interruptHandler: TaskInterruptHandlerContract;
+  private readonly planner: TaskPlannerContract;
+
+  constructor(private readonly deps: AssemOrchestratorDeps) {
+    this.interruptHandler =
+      deps.interruptHandler ?? new DeterministicTaskInterruptHandler();
+    this.planner = deps.planner ?? new DeterministicTaskPlanner();
+  }
 
   async createSession(): Promise<SessionSnapshot> {
     const session = await this.deps.sessionStore.createSession();
@@ -1033,6 +1148,15 @@ export class AssemOrchestrator {
       }
 
       if (pendingActionIntent !== null) {
+        const taskManagerResponse = await this.handleTaskManagerIntent(
+          session,
+          text,
+          trace
+        );
+        if (taskManagerResponse) {
+          return taskManagerResponse;
+        }
+
         trace.providerId = 'tool-only';
         trace.model = 'tool-only';
         trace.result = 'success';
@@ -1085,6 +1209,24 @@ export class AssemOrchestrator {
         const snapshot = await this.reply(session, this.renderHistory(session));
         await this.recordTelemetry(session, trace);
         return snapshot;
+      }
+
+      const interruptResponse = await this.handleTaskInterrupt(
+        session,
+        text,
+        trace
+      );
+      if (interruptResponse) {
+        return interruptResponse;
+      }
+
+      const taskManagerResponse = await this.handleTaskManagerIntent(
+        session,
+        text,
+        trace
+      );
+      if (taskManagerResponse) {
+        return taskManagerResponse;
       }
 
       const greetingResponse = await this.handleGreetingIntent(
@@ -1631,6 +1773,1021 @@ export class AssemOrchestrator {
     }
 
     return 'Necesito el nombre del archivo para prepararlo. Dime algo como "crea un archivo llamado nota.txt".';
+  }
+
+  private async handleTaskInterrupt(
+    session: SessionState,
+    text: string,
+    trace: InteractionTrace
+  ): Promise<SessionSnapshot | null> {
+    const activeTask = await this.deps.taskManager.getActiveTaskForSession(
+      session.sessionId
+    );
+
+    if (!activeTask) {
+      return null;
+    }
+
+    const classification = this.interruptHandler.classify({
+      text,
+      session,
+      activeTask
+    });
+    const language = this.resolveConversationLanguage(session, text);
+
+    await this.recordTaskInterruptTelemetry(session, activeTask, classification);
+
+    if (classification.kind === 'independent_query') {
+      return null;
+    }
+
+    trace.providerId = 'tool-only';
+    trace.model = 'tool-only';
+    trace.result = 'success';
+
+    if (classification.kind === 'task_status_query') {
+      const snapshot = await this.reply(
+        session,
+        this.renderInterruptStatusQuery(
+          activeTask,
+          classification.statusQueryKind ?? 'status',
+          language
+        ),
+        'system',
+        'info',
+        language === 'es' ? 'Estado de tarea activa' : 'Active task status'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (classification.kind === 'task_pause') {
+      if (activeTask.status === 'paused') {
+        const snapshot = await this.reply(
+          session,
+          this.renderTaskAlreadyPaused(activeTask, language),
+          'system',
+          'info',
+          language === 'es' ? 'Tarea ya pausada' : 'Task already paused'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const pausedTask = await this.deps.taskRuntime.pauseTask(
+        activeTask.id,
+        language === 'es'
+          ? 'Pausada desde una interrupcion de la conversacion.'
+          : 'Paused from a conversation interrupt.'
+      );
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskPaused(pausedTask, language),
+        'system',
+        'completed',
+        language === 'es' ? 'Tarea pausada' : 'Task paused'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (classification.kind === 'task_resume') {
+      if (activeTask.status === 'active') {
+        const snapshot = await this.reply(
+          session,
+          this.renderTaskAlreadyActive(activeTask, language),
+          'system',
+          'info',
+          language === 'es' ? 'Tarea ya activa' : 'Task already active'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const resumedTask = await this.deps.taskRuntime.resumeTask(activeTask.id);
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskResumed(resumedTask, language),
+        'system',
+        'completed',
+        language === 'es' ? 'Tarea reanudada' : 'Task resumed'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (classification.kind === 'task_cancel') {
+      const cancelledTask = await this.deps.taskRuntime.cancelTask(
+        activeTask.id,
+        language === 'es'
+          ? 'Cancelada desde una interrupcion de la conversacion.'
+          : 'Cancelled from a conversation interrupt.'
+      );
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskCancelled(cancelledTask, language),
+        'system',
+        'rejected',
+        language === 'es' ? 'Tarea cancelada' : 'Task cancelled'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (
+      classification.kind === 'task_output_refinement' ||
+      classification.kind === 'task_goal_refinement'
+    ) {
+      const refinementDraft = classification.refinement;
+      if (!refinementDraft) {
+        const snapshot = await this.reply(
+          session,
+          language === 'es'
+            ? 'Necesito una instruccion concreta para ajustar la tarea activa.'
+            : 'I need a concrete instruction to adjust the active task.',
+          'system',
+          'info',
+          language === 'es' ? 'Ajuste incompleto' : 'Incomplete refinement'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const refinement = this.createTaskRefinement(refinementDraft);
+      const planningResult = this.planner.refinePlan(activeTask, refinement);
+
+      if (!planningResult.accepted || !planningResult.plan) {
+        await this.recordTaskPlanTelemetry(
+          session,
+          activeTask.id,
+          activeTask.plan,
+          'task_plan_rejected',
+          'rejected',
+          planningResult.clarificationMessage ?? planningResult.reason
+        );
+        const snapshot = await this.reply(
+          session,
+          planningResult.clarificationMessage ??
+            (language === 'es'
+              ? 'No puedo aplicar ese ajuste al plan actual sin una aclaracion breve.'
+              : 'I cannot apply that adjustment to the current plan without a short clarification.'),
+          'system',
+          'info',
+          language === 'es'
+            ? 'Ajuste de plan incompleto'
+            : 'Incomplete plan refinement'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const updatedTask = await this.persistTaskRefinement(
+        activeTask,
+        refinement,
+        planningResult.plan
+      );
+      await this.recordTaskPlanTelemetry(
+        session,
+        updatedTask.id,
+        planningResult.plan,
+        'task_plan_refined',
+        'success',
+        refinement.label
+      );
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskRefinementApplied(activeTask, updatedTask, refinement, language),
+        'system',
+        'completed',
+        language === 'es'
+          ? 'Refinamiento de tarea guardado'
+          : 'Task refinement saved'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (classification.kind === 'task_clarification_needed') {
+      const updatedTask = await this.persistTaskClarification(
+        activeTask,
+        classification.clarificationMessage
+      );
+      const snapshot = await this.reply(
+        session,
+        classification.clarificationMessage ??
+          (language === 'es'
+            ? 'Necesito una aclaracion breve sobre la tarea activa.'
+            : 'I need a short clarification about the active task.'),
+        'system',
+        'info',
+        language === 'es'
+          ? 'Aclaracion sobre tarea activa'
+          : 'Active task clarification'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    return null;
+  }
+
+  private resolveTaskInterruptState(task: AssemTask): TaskInterruptState {
+    const candidate = task.metadata?.interruptState;
+
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      Array.isArray((candidate as { refinements?: unknown }).refinements)
+    ) {
+      return {
+        refinements: (candidate as { refinements: TaskRefinement[] }).refinements,
+        lastInterruptAt:
+          typeof (candidate as { lastInterruptAt?: unknown }).lastInterruptAt ===
+          'string'
+            ? (candidate as { lastInterruptAt?: string }).lastInterruptAt
+            : undefined,
+        lastClarificationMessage:
+          typeof (
+            candidate as { lastClarificationMessage?: unknown }
+          ).lastClarificationMessage === 'string'
+            ? (candidate as { lastClarificationMessage?: string })
+                .lastClarificationMessage
+            : undefined
+      };
+    }
+
+    return {
+      refinements: []
+    };
+  }
+
+  private createTaskRefinement(refinementDraft: TaskRefinementDraft): TaskRefinement {
+    return {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      ...refinementDraft
+    };
+  }
+
+  private listTaskRefinements(task: AssemTask): TaskRefinement[] {
+    return this.resolveTaskInterruptState(task).refinements;
+  }
+
+  private async persistTaskClarification(
+    task: AssemTask,
+    clarificationMessage?: string
+  ): Promise<AssemTask> {
+    const currentState = this.resolveTaskInterruptState(task);
+
+    return this.deps.taskManager.updateTaskProgress(task.id, {
+      progressPercent: task.progressPercent,
+      currentPhase: task.currentPhase,
+      currentStepId: task.currentStepId,
+      metadata: {
+        interruptState: {
+          ...currentState,
+          lastInterruptAt: new Date().toISOString(),
+          lastClarificationMessage: clarificationMessage
+        } satisfies TaskInterruptState
+      }
+    });
+  }
+
+  private async persistTaskRefinement(
+    task: AssemTask,
+    refinement: TaskRefinement,
+    plan?: TaskPlan
+  ): Promise<AssemTask> {
+    const currentState = this.resolveTaskInterruptState(task);
+
+    return this.deps.taskManager.updateTaskProgress(task.id, {
+      progressPercent: task.progressPercent,
+      currentPhase: task.currentPhase,
+      currentStepId: task.currentStepId,
+      plan: plan ?? task.plan,
+      metadata: {
+        interruptState: {
+          refinements: [...currentState.refinements, refinement],
+          lastInterruptAt: refinement.createdAt,
+          lastClarificationMessage: undefined
+        } satisfies TaskInterruptState
+      }
+    });
+  }
+
+  private async recordTaskInterruptTelemetry(
+    session: SessionState,
+    task: AssemTask,
+    classification: TaskInterruptClassification
+  ): Promise<void> {
+    const eventType = this.mapTaskInterruptEventType(classification.kind);
+    if (!eventType) {
+      return;
+    }
+
+    await this.deps.telemetry.record({
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      sessionId: session.sessionId,
+      providerId: 'task-interrupt',
+      model: 'task-interrupt',
+      channel: 'task_interrupt',
+      privacyMode: session.activeMode.privacy,
+      runtimeMode: session.activeMode.runtime,
+      totalDurationMs: 0,
+      toolsUsed: [],
+      confirmationRequired: false,
+      result: classification.kind === 'task_clarification_needed' ? 'rejected' : 'success',
+      toolCount: 0,
+      messagePreview: classification.matchedText,
+      eventType,
+      taskId: task.id,
+      taskStatus: task.status
+    });
+  }
+
+  private async recordTaskPlanTelemetry(
+    session: SessionState,
+    taskId: string | undefined,
+    plan: TaskPlan | undefined,
+    eventType: Extract<
+      TelemetryRecord['eventType'],
+      'task_plan_created' | 'task_plan_refined' | 'task_plan_rejected' | 'task_plan_applied'
+    >,
+    result: TelemetryResult,
+    detail?: string
+  ): Promise<void> {
+    await this.deps.telemetry.record({
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      sessionId: session.sessionId,
+      providerId: 'task-planner',
+      model: 'task-planner',
+      channel: 'task_planner',
+      privacyMode: session.activeMode.privacy,
+      runtimeMode: session.activeMode.runtime,
+      totalDurationMs: 0,
+      toolsUsed: [],
+      confirmationRequired: false,
+      result,
+      toolCount: 0,
+      messagePreview: detail ?? plan?.objective ?? undefined,
+      errorMessage: result === 'error' ? detail : undefined,
+      eventType,
+      taskId,
+      taskStatus: undefined
+    });
+  }
+
+  private mapTaskInterruptEventType(
+    kind: TaskInterruptClassification['kind']
+  ): TelemetryRecord['eventType'] | undefined {
+    switch (kind) {
+      case 'task_status_query':
+        return 'task_interrupt_status_query';
+      case 'task_pause':
+        return 'task_interrupt_pause';
+      case 'task_resume':
+        return 'task_interrupt_resume';
+      case 'task_cancel':
+        return 'task_interrupt_cancel';
+      case 'task_goal_refinement':
+      case 'task_output_refinement':
+        return 'task_interrupt_refinement';
+      case 'task_clarification_needed':
+        return 'task_interrupt_clarification';
+      case 'independent_query':
+        return 'task_interrupt_independent_query';
+    }
+  }
+
+  private isTaskStepCompleted(task: AssemTask, stepId: string): boolean {
+    return task.steps.some(
+      (step) => step.id === stepId && step.status === 'completed'
+    );
+  }
+
+  private renderInterruptStatusQuery(
+    task: AssemTask,
+    queryKind: TaskStatusQueryKind,
+    language: SupportedLanguage
+  ): string {
+    switch (queryKind) {
+      case 'plan':
+        return this.renderTaskPlan(task, language);
+      case 'progress':
+      case 'remaining':
+        return this.renderTaskProgress(task, language);
+      case 'step':
+        return this.renderTaskStep(task, language);
+      case 'completion':
+        return this.renderTaskCompletionCheck(task, language);
+      case 'status':
+      default:
+        return this.renderTaskStatus(task, language);
+    }
+  }
+
+  private renderTaskCompletionCheck(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const phase = task.currentPhase ?? (language === 'es' ? 'sin fase definida' : 'not set');
+
+    if (language === 'es') {
+      if (task.status === 'completed') {
+        return `Si. La tarea "${task.objective}" ya esta completada.`;
+      }
+
+      return `Todavia no. La tarea "${task.objective}" sigue ${this.describeTaskStatus(
+        task.status,
+        language
+      )} en la fase ${phase}.`;
+    }
+
+    if (task.status === 'completed') {
+      return `Yes. The task "${task.objective}" is already completed.`;
+    }
+
+    return `Not yet. The task "${task.objective}" is still ${this.describeTaskStatus(
+      task.status,
+      language
+    )} in phase ${phase}.`;
+  }
+
+  private renderTaskArtifactsSummary(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    if (task.artifacts.length === 0) {
+      return '';
+    }
+
+    const latestArtifact = task.artifacts.at(-1);
+    if (!latestArtifact) {
+      return '';
+    }
+
+    if (language === 'es') {
+      return `Ultimo artefacto: ${latestArtifact.label}. Total de artefactos: ${task.artifacts.length}.`;
+    }
+
+    return `Latest artifact: ${latestArtifact.label}. Total artifacts: ${task.artifacts.length}.`;
+  }
+
+  private renderTaskRefinementsSummary(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const refinements = this.listTaskRefinements(task);
+    if (refinements.length === 0) {
+      return '';
+    }
+
+    const latestLabels = refinements.slice(-3).map((refinement) => refinement.label);
+    if (language === 'es') {
+      return `Refinamientos activos: ${latestLabels.join(', ')}.`;
+    }
+
+    return `Active refinements: ${latestLabels.join(', ')}.`;
+  }
+
+  private listPendingPlanSteps(task: AssemTask): Array<{ id: string; label: string }> {
+    const plan = task.plan;
+    if (!plan) {
+      return [];
+    }
+
+    return plan.steps.filter((planStep) => {
+      const taskStep = task.steps.find((candidate) => candidate.id === planStep.id);
+      return !taskStep || !['completed', 'cancelled'].includes(taskStep.status);
+    });
+  }
+
+  private renderTaskPlan(task: AssemTask, language: SupportedLanguage): string {
+    const plan = task.plan;
+    if (!plan) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" no tiene un plan persistido disponible todavia.`
+        : `The task "${task.objective}" does not have a persisted plan available yet.`;
+    }
+
+    const pendingSteps = this.listPendingPlanSteps(task);
+    const stepPreview = pendingSteps
+      .slice(0, 4)
+      .map((step, index) => `${index + 1}. ${step.label}`)
+      .join(' ');
+    const artifactLabels = plan.expectedArtifacts
+      .slice(0, 3)
+      .map((artifact) => artifact.label)
+      .join(', ');
+    const restrictions = plan.restrictions.slice(0, 2).join(' ');
+
+    if (language === 'es') {
+      return `El plan actual para "${task.objective}" es de tipo ${plan.taskType} y tiene ${plan.phases.length} fase(s) con ${plan.steps.length} paso(s). ${plan.summary}${stepPreview ? ` Pasos pendientes o previstos: ${stepPreview}` : ''}${artifactLabels ? ` Artefactos esperados: ${artifactLabels}.` : ''}${restrictions ? ` Restricciones activas: ${restrictions}` : ''}`;
+    }
+
+    return `The current plan for "${task.objective}" is a ${plan.taskType} plan with ${plan.phases.length} phase(s) and ${plan.steps.length} step(s). ${plan.summary}${stepPreview ? ` Pending or planned steps: ${stepPreview}` : ''}${artifactLabels ? ` Expected artifacts: ${artifactLabels}.` : ''}${restrictions ? ` Active restrictions: ${restrictions}` : ''}`;
+  }
+
+  private renderTaskRefinementApplied(
+    previousTask: AssemTask,
+    updatedTask: AssemTask,
+    refinement: TaskRefinementDraft,
+    language: SupportedLanguage
+  ): string {
+    const draftCompleted = this.isTaskStepCompleted(previousTask, 'draft-report');
+    const reportWritten = this.isTaskStepCompleted(previousTask, 'write-report');
+    const summaryWritten = this.isTaskStepCompleted(previousTask, 'write-summary');
+
+    if (language === 'es') {
+      if (refinement.type === 'length') {
+        return draftCompleted
+          ? 'He guardado que lo quieres mas corto, pero el borrador principal ya esta generado. Lo dejo asociado a la tarea activa, aunque no reescribe pasos ya cerrados.'
+          : 'He guardado que lo quieres mas corto. Lo aplicare en los pasos de generacion que todavia no se han completado.';
+      }
+
+      if (refinement.type === 'language') {
+        return draftCompleted
+          ? `He guardado el cambio de idioma a ${refinement.value === 'en' ? 'ingles' : 'espanol'}. Afectara a los pasos futuros que sigan siendo compatibles, pero no reescribe el borrador que ya se genero.`
+          : `He guardado el cambio de idioma a ${refinement.value === 'en' ? 'ingles' : 'espanol'} y lo aplicare en los siguientes pasos de generacion.`;
+      }
+
+      if (refinement.type === 'summary_priority') {
+        return reportWritten || summaryWritten
+          ? 'He guardado la prioridad de resumen, pero ya no quedan pasos donde adelantarlo en esta tarea.'
+          : 'He priorizado el resumen dentro de la tarea activa. En cuanto el borrador base exista, ASSEM intentara sacar antes el resumen que el informe principal.';
+      }
+
+      if (refinement.type === 'format') {
+        return draftCompleted
+          ? 'He guardado que quieres una tabla, pero el borrador principal ya esta generado. Lo dejo anotado en la tarea, aunque no reharia el contenido ya producido.'
+          : 'He guardado que quieres una tabla y la intentare incluir en el borrador si el siguiente paso todavia lo permite.';
+      }
+
+      if (refinement.type === 'focus') {
+        return draftCompleted
+          ? `He guardado el nuevo enfoque "${refinement.value ?? refinement.label}", pero el borrador actual ya esta generado. Si quieres rehacer el trabajo completo con ese enfoque, tendria que abrir una nueva tarea o regenerar el borrador.`
+          : `He cambiado el enfoque de la tarea activa hacia "${refinement.value ?? refinement.label}" y lo aplicare en los siguientes pasos.`;
+      }
+
+      return `He guardado el ajuste "${refinement.label}" en la tarea activa.`;
+    }
+
+    if (refinement.type === 'length') {
+      return draftCompleted
+        ? 'I saved the request to make it shorter, but the main draft is already generated. It stays attached to the active task without rewriting completed steps.'
+        : 'I saved the request to make it shorter and will apply it to the remaining generation steps.';
+    }
+
+    if (refinement.type === 'language') {
+      return draftCompleted
+        ? `I saved the language change to ${refinement.value === 'en' ? 'English' : 'Spanish'}. It can still affect compatible future steps, but it will not rewrite the draft that already exists.`
+        : `I saved the language change to ${refinement.value === 'en' ? 'English' : 'Spanish'} and will apply it to the remaining generation steps.`;
+    }
+
+    if (refinement.type === 'summary_priority') {
+      return reportWritten || summaryWritten
+        ? 'I saved the summary priority request, but there are no remaining compatible steps to move it earlier in this task.'
+        : 'I prioritized the summary inside the active task. Once the base draft exists, ASSEM will try to produce the summary before the main report.';
+    }
+
+    if (refinement.type === 'format') {
+      return draftCompleted
+        ? 'I saved the request to include a table, but the main draft already exists. The task keeps that refinement without regenerating finished content.'
+        : 'I saved the request to include a table and will apply it if the remaining draft step still allows it.';
+    }
+
+    if (refinement.type === 'focus') {
+      return draftCompleted
+        ? `I saved the new focus "${refinement.value ?? refinement.label}", but the current draft is already generated. Reworking the whole output around that focus would require a new task or a draft regeneration step.`
+        : `I changed the focus of the active task toward "${refinement.value ?? refinement.label}" and will apply it to the remaining steps.`;
+    }
+
+    return `I saved the refinement "${refinement.label}" on the active task.`;
+  }
+
+  private async handleTaskManagerIntent(
+    session: SessionState,
+    text: string,
+    trace: InteractionTrace
+  ): Promise<SessionSnapshot | null> {
+    const handlesTaskIntent =
+      isTaskPlanningRequest(text) ||
+      isTaskPlanRequest(text) ||
+      isTaskStatusRequest(text) ||
+      isTaskProgressRequest(text) ||
+      isTaskStepRequest(text) ||
+      isTaskPauseRequest(text) ||
+      isTaskResumeRequest(text) ||
+      isTaskCancelRequest(text);
+
+    if (!handlesTaskIntent) {
+      return null;
+    }
+
+    const language = this.resolveConversationLanguage(session, text);
+    trace.providerId = 'tool-only';
+    trace.model = 'tool-only';
+    trace.result = 'success';
+
+    if (isTaskPlanningRequest(text)) {
+      const activeProfile = await this.deps.memoryBackend.getActiveProfile();
+      const planResult = this.planner.createPlan({
+        session,
+        text,
+        objective: isTaskCreateRequest(text) ? extractTaskObjective(text) ?? undefined : undefined,
+        activeProfile: activeProfile ? summarizeProfile(activeProfile) : null
+      });
+
+      if (!planResult.accepted || !planResult.plan) {
+        await this.recordTaskPlanTelemetry(
+          session,
+          undefined,
+          planResult.plan,
+          'task_plan_rejected',
+          'rejected',
+          planResult.clarificationMessage ?? planResult.reason
+        );
+        const snapshot = await this.reply(
+          session,
+          planResult.clarificationMessage ?? this.renderTaskCreateClarification(language),
+          'system',
+          'info',
+          language === 'es'
+            ? 'Plan de tarea no disponible'
+            : 'Task plan unavailable'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const previousActiveTask = await this.deps.taskManager.getActiveTaskForSession(
+        session.sessionId
+      );
+      const task = await this.deps.taskRuntime.createTask({
+        sessionId: session.sessionId,
+        taskType: planResult.plan.taskType,
+        objective: planResult.plan.objective,
+        plan: planResult.plan,
+        autoStart: true
+      });
+      await this.recordTaskPlanTelemetry(
+        session,
+        task.id,
+        planResult.plan,
+        'task_plan_created',
+        'success',
+        planResult.plan.objective
+      );
+      await this.recordTaskPlanTelemetry(
+        session,
+        task.id,
+        planResult.plan,
+        'task_plan_applied',
+        'success',
+        planResult.plan.objective
+      );
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskCreated(task, previousActiveTask, language),
+        'system',
+        'completed',
+        language === 'es' ? 'Tarea creada' : 'Task created'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    const activeTask = await this.deps.taskManager.getActiveTaskForSession(
+      session.sessionId
+    );
+
+    if (!activeTask) {
+      const snapshot = await this.reply(
+        session,
+        this.renderNoActiveTask(language),
+        'system',
+        'info',
+        language === 'es' ? 'Sin tarea activa' : 'No active task'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (isTaskStatusRequest(text)) {
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskStatus(activeTask, language),
+        'system',
+        'info',
+        language === 'es' ? 'Estado de la tarea' : 'Task status'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (isTaskPlanRequest(text)) {
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskPlan(activeTask, language),
+        'system',
+        'info',
+        language === 'es' ? 'Plan de la tarea' : 'Task plan'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (isTaskProgressRequest(text)) {
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskProgress(activeTask, language),
+        'system',
+        'info',
+        language === 'es' ? 'Progreso de la tarea' : 'Task progress'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (isTaskStepRequest(text)) {
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskStep(activeTask, language),
+        'system',
+        'info',
+        language === 'es' ? 'Paso actual de la tarea' : 'Current task step'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (isTaskPauseRequest(text)) {
+      if (activeTask.status === 'paused') {
+        const snapshot = await this.reply(
+          session,
+          this.renderTaskAlreadyPaused(activeTask, language),
+          'system',
+          'info',
+          language === 'es' ? 'Tarea ya pausada' : 'Task already paused'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const pausedTask = await this.deps.taskRuntime.pauseTask(
+        activeTask.id,
+        language === 'es'
+          ? 'Pausada desde el chat de la sesion.'
+          : 'Paused from the session chat.'
+      );
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskPaused(pausedTask, language),
+        'system',
+        'completed',
+        language === 'es' ? 'Tarea pausada' : 'Task paused'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (isTaskResumeRequest(text)) {
+      if (activeTask.status === 'active') {
+        const snapshot = await this.reply(
+          session,
+          this.renderTaskAlreadyActive(activeTask, language),
+          'system',
+          'info',
+          language === 'es' ? 'Tarea ya activa' : 'Task already active'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
+      const resumedTask = await this.deps.taskRuntime.resumeTask(activeTask.id);
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskResumed(resumedTask, language),
+        'system',
+        'completed',
+        language === 'es' ? 'Tarea reanudada' : 'Task resumed'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (isTaskCancelRequest(text)) {
+      const cancelledTask = await this.deps.taskRuntime.cancelTask(
+        activeTask.id,
+        language === 'es'
+          ? 'Cancelada desde el chat de la sesion.'
+          : 'Cancelled from the session chat.'
+      );
+      const snapshot = await this.reply(
+        session,
+        this.renderTaskCancelled(cancelledTask, language),
+        'system',
+        'rejected',
+        language === 'es' ? 'Tarea cancelada' : 'Task cancelled'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    return null;
+  }
+
+  private renderTaskCreateClarification(language: SupportedLanguage): string {
+    if (language === 'es') {
+      return 'Puedo abrir una tarea, pero necesito el objetivo. Dime algo como "abre una tarea para preparar el informe semanal".';
+    }
+
+    return 'I can open a task, but I need the objective. Say something like "start a task to prepare the weekly report".';
+  }
+
+  private renderNoActiveTask(language: SupportedLanguage): string {
+    if (language === 'es') {
+      return 'No hay ninguna tarea activa en esta sesion.';
+    }
+
+    return 'There is no active task in this session.';
+  }
+
+  private renderTaskCreated(
+    task: AssemTask,
+    previousActiveTask: AssemTask | null,
+    language: SupportedLanguage
+  ): string {
+    const phase = task.currentPhase ?? (language === 'es' ? 'sin fase definida' : 'no phase yet');
+    const previousTaskChanged =
+      previousActiveTask && previousActiveTask.id !== task.id;
+
+    if (language === 'es') {
+      return previousTaskChanged
+        ? `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}. La tarea anterior "${previousActiveTask.objective}" ha quedado en pausa.`
+        : `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.`;
+    }
+
+    return previousTaskChanged
+      ? `I opened a new active task: "${task.objective}". Current phase: ${phase}. The previous task "${previousActiveTask.objective}" is now paused.`
+      : `I opened a new active task: "${task.objective}". Current phase: ${phase}.`;
+  }
+
+  private renderTaskStatus(task: AssemTask, language: SupportedLanguage): string {
+    const currentStep = this.resolveCurrentTaskStep(task);
+    const artifactsSummary = this.renderTaskArtifactsSummary(task, language);
+    const refinementsSummary = this.renderTaskRefinementsSummary(task, language);
+
+    if (language === 'es') {
+      const progress =
+        task.progressPercent === null
+          ? 'sin porcentaje fiable todavia'
+          : `${task.progressPercent}% completado`;
+      const phase = task.currentPhase ?? 'sin fase definida';
+      const step = currentStep ? `Paso actual: ${currentStep.label}.` : '';
+      return `La tarea activa es "${task.objective}". Estado: ${this.describeTaskStatus(task.status, language)}. Fase actual: ${phase}. Progreso registrado: ${progress}.${step ? ` ${step}` : ''}${artifactsSummary ? ` ${artifactsSummary}` : ''}${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+    }
+
+    const progress =
+      task.progressPercent === null
+        ? 'no reliable percentage yet'
+        : `${task.progressPercent}% completed`;
+    const phase = task.currentPhase ?? 'no phase yet';
+    const step = currentStep ? `Current step: ${currentStep.label}.` : '';
+    return `The active task is "${task.objective}". Status: ${this.describeTaskStatus(task.status, language)}. Current phase: ${phase}. Recorded progress: ${progress}.${step ? ` ${step}` : ''}${artifactsSummary ? ` ${artifactsSummary}` : ''}${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+  }
+
+  private renderTaskProgress(task: AssemTask, language: SupportedLanguage): string {
+    const refinementsSummary = this.renderTaskRefinementsSummary(task, language);
+
+    if (language === 'es') {
+      if (task.progressPercent === null) {
+        return `La tarea "${task.objective}" sigue en ${task.currentPhase ?? 'una fase sin definir'}, pero todavia no tengo un porcentaje fiable para decir cuanto queda.${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+      }
+
+      const remaining = Math.max(0, 100 - task.progressPercent);
+      return `La tarea "${task.objective}" va por el ${task.progressPercent}%. Queda un ${remaining}% segun el progreso registrado. Fase actual: ${task.currentPhase ?? 'sin fase definida'}.${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+    }
+
+    if (task.progressPercent === null) {
+      return `The task "${task.objective}" is still in ${task.currentPhase ?? 'an undefined phase'}, but I do not have a reliable percentage yet.${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+    }
+
+    const remaining = Math.max(0, 100 - task.progressPercent);
+    return `The task "${task.objective}" is at ${task.progressPercent}%. ${remaining}% remains according to the recorded progress. Current phase: ${task.currentPhase ?? 'no phase yet'}.${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+  }
+
+  private renderTaskStep(task: AssemTask, language: SupportedLanguage): string {
+    const currentStep = this.resolveCurrentTaskStep(task);
+    const artifactsSummary = this.renderTaskArtifactsSummary(task, language);
+
+    if (language === 'es') {
+      if (!currentStep) {
+        return `La tarea "${task.objective}" no tiene un paso actual definido todavia. La fase actual es ${task.currentPhase ?? 'sin fase'}.${artifactsSummary ? ` ${artifactsSummary}` : ''}`;
+      }
+
+      return `Voy por el paso "${currentStep.label}" dentro de la tarea "${task.objective}". Estado: ${this.describeTaskStatus(task.status, language)}.${artifactsSummary ? ` ${artifactsSummary}` : ''}`;
+    }
+
+    if (!currentStep) {
+      return `The task "${task.objective}" does not have a current step yet. The current phase is ${task.currentPhase ?? 'not set'}.${artifactsSummary ? ` ${artifactsSummary}` : ''}`;
+    }
+
+    return `I am on the step "${currentStep.label}" in the task "${task.objective}". Status: ${this.describeTaskStatus(task.status, language)}.${artifactsSummary ? ` ${artifactsSummary}` : ''}`;
+  }
+
+  private renderTaskPaused(task: AssemTask, language: SupportedLanguage): string {
+    if (language === 'es') {
+      return `He pausado la tarea "${task.objective}". Queda en la fase ${task.currentPhase ?? 'sin fase definida'}${task.progressPercent === null ? '' : ` y con un ${task.progressPercent}% registrado`}.`;
+    }
+
+    return `I paused the task "${task.objective}". It remains in phase ${task.currentPhase ?? 'not set'}${task.progressPercent === null ? '' : ` with ${task.progressPercent}% recorded`}.`;
+  }
+
+  private renderTaskAlreadyPaused(task: AssemTask, language: SupportedLanguage): string {
+    if (language === 'es') {
+      return `La tarea "${task.objective}" ya estaba en pausa.`;
+    }
+
+    return `The task "${task.objective}" was already paused.`;
+  }
+
+  private renderTaskResumed(task: AssemTask, language: SupportedLanguage): string {
+    if (language === 'es') {
+      return `He reanudado la tarea "${task.objective}". Fase actual: ${task.currentPhase ?? 'sin fase definida'}.`;
+    }
+
+    return `I resumed the task "${task.objective}". Current phase: ${task.currentPhase ?? 'not set'}.`;
+  }
+
+  private renderTaskAlreadyActive(task: AssemTask, language: SupportedLanguage): string {
+    if (language === 'es') {
+      return `La tarea "${task.objective}" ya estaba activa.`;
+    }
+
+    return `The task "${task.objective}" was already active.`;
+  }
+
+  private renderTaskCancelled(task: AssemTask, language: SupportedLanguage): string {
+    if (language === 'es') {
+      return `He cancelado la tarea "${task.objective}".`;
+    }
+
+    return `I cancelled the task "${task.objective}".`;
+  }
+
+  private describeTaskStatus(
+    status: AssemTask['status'],
+    language: SupportedLanguage
+  ): string {
+    if (language === 'es') {
+      switch (status) {
+        case 'pending':
+          return 'pendiente';
+        case 'active':
+          return 'activa';
+        case 'paused':
+          return 'pausada';
+        case 'blocked':
+          return 'bloqueada';
+        case 'completed':
+          return 'completada';
+        case 'failed':
+          return 'fallida';
+        case 'cancelled':
+          return 'cancelada';
+      }
+    }
+
+    switch (status) {
+      case 'pending':
+        return 'pending';
+      case 'active':
+        return 'active';
+      case 'paused':
+        return 'paused';
+      case 'blocked':
+        return 'blocked';
+      case 'completed':
+        return 'completed';
+      case 'failed':
+        return 'failed';
+      case 'cancelled':
+        return 'cancelled';
+    }
+  }
+
+  private resolveCurrentTaskStep(task: AssemTask) {
+    if (task.currentStepId) {
+      const step = task.steps.find((candidate) => candidate.id === task.currentStepId);
+      if (step) {
+        return step;
+      }
+    }
+
+    return task.steps.find((candidate) => candidate.status === 'active') ?? null;
   }
 
   private async handleGreetingIntent(

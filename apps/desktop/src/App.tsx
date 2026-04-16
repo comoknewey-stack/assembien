@@ -3,12 +3,15 @@ import { startTransition, useEffect, useRef, useState, type KeyboardEvent } from
 import { AssemClient } from '@assem/sdk';
 import type {
   ActiveMode,
+  AssemTask,
   ProfileImportPayload,
   ProfileMemory,
   ScheduledTask,
   SpeechToTextAudioInput,
   SessionSnapshot,
   SystemStateSnapshot,
+  TaskPlan,
+  TaskRefinement,
   VoiceAudioDiagnostics
 } from '@assem/shared-types';
 
@@ -97,6 +100,103 @@ function healthStatusLabel(status?: string): string {
     default:
       return status ?? 'sin datos';
   }
+}
+
+function taskStatusLabel(status?: AssemTask['status']): string {
+  switch (status) {
+    case 'pending':
+      return 'pendiente';
+    case 'active':
+      return 'activa';
+    case 'paused':
+      return 'pausada';
+    case 'blocked':
+      return 'bloqueada';
+    case 'completed':
+      return 'completada';
+    case 'failed':
+      return 'fallida';
+    case 'cancelled':
+      return 'cancelada';
+    default:
+      return 'sin datos';
+  }
+}
+
+function taskProgressLabel(task: AssemTask | null | undefined): string {
+  if (!task) {
+    return 'sin tarea';
+  }
+
+  return task.progressPercent === null ? 'sin porcentaje' : `${task.progressPercent}%`;
+}
+
+function isTaskRefinement(value: unknown): value is TaskRefinement {
+  if (!isObjectRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.label === 'string' &&
+    typeof value.createdAt === 'string' &&
+    typeof value.instruction === 'string' &&
+    typeof value.category === 'string' &&
+    typeof value.type === 'string'
+  );
+}
+
+function extractTaskRefinements(task: AssemTask | null | undefined): TaskRefinement[] {
+  if (!task || !isObjectRecord(task.metadata)) {
+    return [];
+  }
+
+  const interruptState = task.metadata.interruptState;
+  if (!isObjectRecord(interruptState) || !Array.isArray(interruptState.refinements)) {
+    return [];
+  }
+
+  return interruptState.refinements.filter(isTaskRefinement);
+}
+
+function isTaskPlan(value: unknown): value is TaskPlan {
+  if (!isObjectRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.objective === 'string' &&
+    typeof value.taskType === 'string' &&
+    typeof value.summary === 'string' &&
+    Array.isArray(value.phases) &&
+    Array.isArray(value.steps) &&
+    Array.isArray(value.expectedArtifacts) &&
+    Array.isArray(value.restrictions) &&
+    Array.isArray(value.refinements)
+  );
+}
+
+function extractTaskPlan(task: AssemTask | null | undefined): TaskPlan | null {
+  if (!task || !isTaskPlan(task.plan)) {
+    return null;
+  }
+
+  return task.plan;
+}
+
+function extractPendingPlannedSteps(task: AssemTask | null | undefined): string[] {
+  const plan = extractTaskPlan(task);
+  if (!task || !plan) {
+    return [];
+  }
+
+  return plan.steps
+    .filter((planStep) => {
+      const taskStep = task.steps.find((candidate) => candidate.id === planStep.id);
+      return !taskStep || !['completed', 'cancelled'].includes(taskStep.status);
+    })
+    .map((planStep) => planStep.label);
 }
 
 function localizedLabel(label?: string): string {
@@ -195,6 +295,12 @@ function providerLabel(toolOrProviderId: string | undefined, fallback?: string):
       return 'Ollama';
     case 'demo-local':
       return 'Demo local';
+    case 'task-manager':
+      return 'Task Manager';
+    case 'task-runtime':
+      return 'Task Runtime';
+    case 'task-interrupt':
+      return 'Task Interrupt';
     default:
       return localizedLabel(fallback ?? toolOrProviderId);
   }
@@ -303,6 +409,18 @@ export default function App() {
   const profiles = systemState?.profiles ?? [];
   const activeProfile = systemState?.activeProfile ?? null;
   const tasks = systemState?.scheduledTasks ?? [];
+  const taskManagerState = systemState?.taskManager;
+  const activeConversationTask = taskManagerState?.activeTask ?? null;
+  const activeConversationTaskStep =
+    activeConversationTask?.steps.find((step) => step.id === activeConversationTask.currentStepId) ??
+    activeConversationTask?.steps.find((step) => step.status === 'active') ??
+    null;
+  const activeConversationTaskArtifacts = activeConversationTask?.artifacts.slice(-3) ?? [];
+  const activeConversationTaskRefinements = extractTaskRefinements(activeConversationTask);
+  const activeConversationTaskPlan = extractTaskPlan(activeConversationTask);
+  const activeConversationTaskPendingPlanSteps = extractPendingPlannedSteps(
+    activeConversationTask
+  );
   const providerHealth = systemState?.health.providerHealth ?? [];
   const providerRuntime = systemState?.providerRuntime;
   const voice = systemState?.voice ?? null;
@@ -332,7 +450,7 @@ export default function App() {
   const pendingActions = currentSession?.pendingAction
     ? [currentSession.pendingAction]
     : systemState?.pendingActions ?? [];
-  const activeTaskCount = tasks.filter((task) => task.enabled).length;
+  const enabledScheduledTaskCount = tasks.filter((task) => task.enabled).length;
   const lastAction = actionLog[0] ?? null;
   const lastTelemetry = recentTelemetry[0] ?? null;
   const busy = isBusy || isVoiceBusy;
@@ -738,7 +856,7 @@ export default function App() {
               </article>
               <article className="summary-card">
                 <span className="summary-card__label">Tareas</span>
-                <strong>{activeTaskCount}</strong>
+                <strong>{enabledScheduledTaskCount}</strong>
                 <p>{tasks.length === 1 ? 'tarea total' : 'tareas totales'}</p>
               </article>
             </section>
@@ -909,6 +1027,77 @@ export default function App() {
                   )}
                   {providerRuntime?.ollamaError && (
                     <p className="small-copy">Error de Ollama: {providerRuntime.ollamaError}</p>
+                  )}
+                </article>
+                <article className="card card--compact">
+                  <div className="card__meta">
+                    <strong>Tarea activa</strong>
+                    <span>
+                      {activeConversationTask
+                        ? taskStatusLabel(activeConversationTask.status)
+                        : 'ninguna'}
+                    </span>
+                  </div>
+                  {activeConversationTask ? (
+                    <>
+                      <p>{activeConversationTask.objective}</p>
+                      <p className="small-copy">
+                        Progreso: {taskProgressLabel(activeConversationTask)}
+                      </p>
+                      <p className="small-copy">
+                        Fase: {activeConversationTask.currentPhase ?? 'sin fase definida'}
+                      </p>
+                      <p className="small-copy">
+                        Paso actual:{' '}
+                        {activeConversationTaskStep?.label ?? 'sin paso activo'}
+                      </p>
+                      <p className="small-copy">
+                        Artefactos: {activeConversationTask.artifacts.length}
+                      </p>
+                      {activeConversationTaskArtifacts.length > 0 && (
+                        <div className="stack stack--tight">
+                          {activeConversationTaskArtifacts.map((artifact) => (
+                            <p className="small-copy" key={artifact.id}>
+                              {artifact.label}
+                              {artifact.filePath ? ` - ${artifact.filePath}` : ''}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      {activeConversationTaskRefinements.length > 0 && (
+                        <div className="stack stack--tight">
+                          <p className="small-copy">
+                            Refinamientos activos: {activeConversationTaskRefinements.length}
+                          </p>
+                          {activeConversationTaskRefinements.slice(-3).map((refinement) => (
+                            <p className="small-copy" key={refinement.id}>
+                              {refinement.label}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      {activeConversationTaskPlan && (
+                        <div className="stack stack--tight">
+                          <p className="small-copy">
+                            Plan: {activeConversationTaskPlan.phases.length} fase(s) -{' '}
+                            {activeConversationTaskPlan.steps.length} paso(s)
+                          </p>
+                          <p className="small-copy">{activeConversationTaskPlan.summary}</p>
+                          {activeConversationTaskPendingPlanSteps.slice(0, 3).map((stepLabel, index) => (
+                            <p className="small-copy" key={`${stepLabel}-${index}`}>
+                              Pendiente: {stepLabel}
+                            </p>
+                          ))}
+                          <p className="small-copy">
+                            Artefactos esperados: {activeConversationTaskPlan.expectedArtifacts.length}
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="small-copy">
+                      No hay una tarea activa asociada a esta sesion.
+                    </p>
                   )}
                 </article>
                 {lastTelemetry && (
@@ -1486,6 +1675,38 @@ export default function App() {
             {providerRuntime?.fallbackUsed && (
               <span className="pill">Fallback activo</span>
             )}
+            <span className="pill">
+              Tarea activa:{' '}
+              {activeConversationTask
+                ? taskStatusLabel(activeConversationTask.status)
+                : 'ninguna'}
+            </span>
+            {activeConversationTask && (
+              <>
+                <span className="pill">Fase: {activeConversationTask.currentPhase ?? 'sin fase'}</span>
+                <span className="pill">
+                  Progreso: {taskProgressLabel(activeConversationTask)}
+                </span>
+                <span className="pill">
+                  Paso: {activeConversationTaskStep?.label ?? 'sin paso'}
+                </span>
+                {activeConversationTaskArtifacts[0] && (
+                  <span className="pill">
+                    Ultimo artefacto: {activeConversationTaskArtifacts.at(-1)?.label}
+                  </span>
+                )}
+                {activeConversationTaskPlan && (
+                  <span className="pill">
+                    Plan: {activeConversationTaskPendingPlanSteps.length} paso(s) pendientes
+                  </span>
+                )}
+                {activeConversationTaskRefinements.length > 0 && (
+                  <span className="pill">
+                    Ajustes: {activeConversationTaskRefinements.length}
+                  </span>
+                )}
+              </>
+            )}
             <span className="pill">Voz: {voiceAvailabilityLabel(voice)}</span>
             <span className="pill">Mic: {voice?.microphoneAccessible ? 'accesible' : 'sin acceso'}</span>
             <span className="pill">
@@ -1501,7 +1722,7 @@ export default function App() {
               </button>
             )}
             <span className="pill">Perfil: {activeProfile?.name ?? 'ninguno'}</span>
-            <span className="pill">Tareas: {tasks.filter((task) => task.enabled).length}</span>
+            <span className="pill">Tareas: {enabledScheduledTaskCount}</span>
           </div>
 
           <div

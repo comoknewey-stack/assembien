@@ -7,6 +7,7 @@ ASSEM uses a file-backed persistence layer under `ASSEM_DATA_ROOT`.
 Files currently used:
 
 - `sessions.json`
+- `tasks.json`
 - `profiles.json`
 - `scheduler.json`
 - `telemetry.jsonl`
@@ -27,8 +28,148 @@ Session context contains:
 Session context does not contain:
 
 - profile memory
+- task manager state
 - telemetry history
 - internal server config
+
+## Task Manager
+
+Task Manager v1 is a dedicated local service for long-running work state.
+
+Current responsibilities:
+
+- create and persist tasks
+- keep one active task pointer per session
+- track status, phase, progress and current step
+- attach lightweight artifact metadata
+- expose pause, resume, cancel, complete and fail transitions
+
+Supported task states:
+
+- `pending`
+- `active`
+- `paused`
+- `blocked`
+- `completed`
+- `failed`
+- `cancelled`
+
+Task Manager is separate from:
+
+- conversation message history
+- profile memory
+- scheduler tasks
+- telemetry storage
+
+In the current architecture:
+
+- Task Manager persists to `tasks.json`
+- the orchestrator reads it directly to answer task-status questions
+- the local agent exposes it through `/api/tasks*`
+- the UI renders it from `/api/system` and SSE state updates
+
+## Task Runtime
+
+Task Runtime / Executor v1 is the execution layer on top of Task Manager.
+
+Current responsibilities:
+
+- create runtime-backed tasks from chat or API requests
+- execute real phases and steps in the background
+- update Task Manager progress and phase state
+- attach real artifacts
+- pause, resume and cancel execution
+- mark tasks completed or failed with real outcomes
+
+Current runtime task type:
+
+- `research_report_basic`
+
+Current execution phases:
+
+- prepare workspace
+- generate draft report through the active model router
+- write `report.md`
+- write `summary.txt`
+
+Restart behavior in this phase:
+
+- Task Runtime does not attempt automatic mid-step recovery
+- persisted runtime tasks that were still `active` are paused on startup
+- the user can resume them manually from the last safe step
+
+## Planner
+
+Planner v1 is the task-structure layer that sits before Task Runtime.
+
+Current responsibilities:
+
+- classify supported open objectives
+- build a persisted task plan
+- define phases, steps and expected artifacts before execution starts
+- keep the plan aligned with the real runtime capabilities of this phase
+- adjust the persisted plan when a compatible refinement is applied
+
+Current supported task types:
+
+- `research_report_basic`
+
+Current non-goals:
+
+- general-purpose planning
+- browser or desktop automation planning
+- multi-task planning
+- continuous re-planning after every runtime step
+
+Current persistence model:
+
+- the plan is stored with the task in `tasks.json`
+- the plan stays separate from profile memory and free conversation history
+
+## Interrupt Handler
+
+Interrupt Handler v1 is the task-interruption router that sits in front of normal model fallback when a session has an active task.
+
+Current responsibilities:
+
+- classify whether the latest user message is about the active task
+- answer real task status queries from persisted task state
+- route pause, resume and cancel controls to the runtime/task manager
+- persist simple refinements on the active task
+- keep independent questions out of the task-control path
+
+Supported interrupt classes:
+
+- `task_status_query`
+- `task_pause`
+- `task_resume`
+- `task_cancel`
+- `task_goal_refinement`
+- `task_output_refinement`
+- `task_clarification_needed`
+- `independent_query`
+
+Current refinement examples:
+
+- `hazlo mas corto`
+- `hazlo en ingles`
+- `hazlo en espanol`
+- `primero dame un resumen`
+- `anade una tabla`
+- simple focus shifts such as `cambia el enfoque a riesgos`
+
+Current persistence model:
+
+- refinements and clarification markers are stored inside task metadata in `tasks.json`
+- they remain attached to the task instead of polluting profile memory or session-global settings
+
+Current safety rule:
+
+- vague corrections such as `eso no era lo que queria` trigger clarification instead of destructive automatic changes
+
+Current independence rule:
+
+- if the message is classified as `independent_query`, the task stays active and the normal orchestration path continues
 
 ## Profile Memory
 
@@ -74,6 +215,13 @@ Recorded fields per interaction:
 - message preview
 - fallback used
 - fallback reason
+
+Task-related telemetry channels in this phase:
+
+- `task_manager`
+- `task_runtime`
+- `task_planner`
+- `task_interrupt`
 
 ## Policy Engine
 
