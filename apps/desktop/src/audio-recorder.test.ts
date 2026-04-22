@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { analyzeMonoPcmCapture } from './audio-recorder';
+import { analyzeMonoPcmCapture, normalizeMonoPcmLevel } from './audio-recorder';
 
 describe('analyzeMonoPcmCapture', () => {
   it('flags empty audio as suspicious', () => {
@@ -38,5 +38,25 @@ describe('analyzeMonoPcmCapture', () => {
     expect(diagnostics.peakLevel).toBeGreaterThan(0.4);
     expect(diagnostics.silenceDetected).toBe(false);
     expect(diagnostics.suspicious).toBe(false);
+  });
+
+  it('raises quiet but usable speech before WAV encoding', () => {
+    const samples = new Float32Array(16_000);
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] = Math.sin((index / 16_000) * Math.PI * 2 * 220) * 0.08;
+    }
+
+    const normalized = normalizeMonoPcmLevel(samples);
+    const diagnostics = analyzeMonoPcmCapture(
+      normalized.samples,
+      16_000,
+      48_000,
+      normalized.gainApplied
+    );
+
+    expect(normalized.gainApplied).toBeGreaterThan(1);
+    expect(diagnostics.gainApplied).toBeGreaterThan(1);
+    expect(diagnostics.peakLevel).toBeGreaterThan(0.3);
+    expect(diagnostics.silenceDetected).toBe(false);
   });
 });

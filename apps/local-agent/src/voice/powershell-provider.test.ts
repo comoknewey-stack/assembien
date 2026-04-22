@@ -32,6 +32,15 @@ describe('Windows speech PowerShell provider internals', () => {
     expect(script).toContain('GetInstalledVoices()');
   });
 
+  it('does not block TTS completion by peeking redirected stdin while speaking', () => {
+    const script = powerShellProviderInternals.createTtsSessionScript('es-ES');
+
+    expect(script).toContain('$synth.SpeakAsync($text)');
+    expect(script).toContain('$synth.State -ne [System.Speech.Synthesis.SynthesizerState]::Ready');
+    expect(script).not.toContain('[Console]::In.Peek()');
+    expect(script).not.toContain("[Console]::In.ReadLine()");
+  });
+
   it('cleans CLIXML noise from PowerShell stream lines', () => {
     expect(powerShellProviderInternals.sanitizePowerShellMessage('#< CLIXML')).toBe('');
     expect(

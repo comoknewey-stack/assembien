@@ -12,6 +12,8 @@ Base URL: `http://localhost:4318`
     - health
     - provider runtime:
       - configured provider id
+      - configured model
+      - resolved configured model when available
       - active provider id
       - active model
       - fallback used
@@ -53,6 +55,12 @@ Base URL: `http://localhost:4318`
 
 - `GET /api/voice?sessionId=<id>`
 - `POST /api/voice/settings?sessionId=<id>`
+- `POST /api/voice/mode`
+- `POST /api/voice/wake-window` experimental/legacy, disabled by default unless wake word is explicitly enabled
+- `POST /api/voice/active-listening/start`
+- `POST /api/voice/active-listening/state`
+- `POST /api/voice/active-listening/stop`
+- `POST /api/voice/active-listening/cancel`
 - `POST /api/voice/recording/start`
 - `POST /api/voice/recording/stop`
 - `POST /api/voice/recording/cancel`
@@ -65,10 +73,57 @@ Base URL: `http://localhost:4318`
 {
   "settings": {
     "autoReadResponses": true,
-    "preferredLanguage": "es-ES"
+    "preferredLanguage": "es-ES",
+    "micMuted": false
   }
 }
 ```
+
+`POST /api/voice/mode` example:
+
+```json
+{
+  "sessionId": "session-id",
+  "enabled": true
+}
+```
+
+This endpoint now controls `Modo conversacion`. When enabled and the microphone is not muted, the frontend can enter `conversation_waiting` and capture spoken turns. When disabled, the frontend should stop microphone capture and the agent marks the session as `off`. The enabled/disabled listening state is not restored on startup.
+
+`micMuted` is configured through `POST /api/voice/settings`. When muted, the frontend must stop/cancel microphone capture even if conversation mode remains enabled.
+
+`POST /api/voice/wake-window` experimental/legacy example:
+
+```json
+{
+  "sessionId": "session-id",
+  "audio": {
+    "mimeType": "audio/wav",
+    "fileName": "assem-wake-window.wav",
+    "base64Data": "<base64-audio>",
+    "durationMs": 2500
+  }
+}
+```
+
+The response includes `wakeDetected` and the current voice state. Wake windows are transcribed locally with `whisper-cpp` and do not enter chat. This path is disabled unless `ASSEM_WAKE_WORD_ENABLED=true`; it is not the primary voice flow.
+
+`POST /api/voice/active-listening/stop` example:
+
+```json
+{
+  "sessionId": "session-id",
+  "reason": "silence",
+  "audio": {
+    "mimeType": "audio/wav",
+    "fileName": "assem-conversation-turn.wav",
+    "base64Data": "<base64-audio>",
+    "durationMs": 4200
+  }
+}
+```
+
+The active listening transcript is inserted into the normal chat flow. Conversation mode sends only final turn audio here, never partial transcripts. If `reason` is `no_speech`, no empty transcript is sent to chat.
 
 `POST /api/voice/recording/start` example:
 
@@ -121,6 +176,8 @@ Runtime note:
   - likely language mismatch
 - provider health for `whisper-cpp` now includes a small real self-check before it reports itself ready
 - the active runtime does not register the old Windows STT provider anymore; `windows-system-stt` remains legacy-only code
+- conversation mode telemetry records mode enable/disable, mute changes, conversation waiting, active speech/silence and active transcription success/failure without storing raw audio
+- wake-window telemetry is only relevant when experimental wake mode is explicitly enabled
 
 `POST /api/voice/speak` example:
 

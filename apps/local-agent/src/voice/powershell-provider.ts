@@ -391,15 +391,6 @@ try {
   $synth.SpeakAsync($text) | Out-Null
 
   while ($synth.State -ne [System.Speech.Synthesis.SynthesizerState]::Ready) {
-    if ([Console]::In.Peek() -ge 0) {
-      $line = [Console]::In.ReadLine()
-      if ($line -eq 'STOP') {
-        $synth.SpeakAsyncCancelAll()
-        Write-Output 'STOPPED'
-        exit 0
-      }
-    }
-
     Start-Sleep -Milliseconds 100
   }
 
@@ -697,13 +688,7 @@ class WindowsTextToSpeechPlayback implements TextToSpeechPlayback {
     }
 
     this.stopped = true;
-
-    try {
-      this.child.stdin.write('STOP\n');
-    } catch {
-      killProcess(this.child);
-      return;
-    }
+    killProcess(this.child);
 
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {

@@ -89,6 +89,68 @@ describe('AssemClient', () => {
     );
   });
 
+  it('sends voice mode updates and wake windows to the dedicated endpoints', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        voice: {
+          available: true,
+          status: 'ready',
+          settings: {
+            sttProviderId: 'whisper-cpp',
+            ttsProviderId: 'windows-system-tts',
+            preferredLanguage: 'es-ES',
+            autoReadResponses: false,
+            voiceModeEnabled: true,
+            wakeWord: 'prolijo',
+            wakeWordAliases: ['polijo'],
+            wakeWindowMs: 2_500,
+            wakeIntervalMs: 500,
+            activeSilenceMs: 1_200,
+            activeMaxMs: 20_000,
+            activeMinSpeechMs: 500,
+            wakeDebug: false
+          },
+          sttProviders: [],
+          ttsProviders: [],
+          microphoneAccessible: true,
+          session: null
+        },
+        wakeDetected: false
+      })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = new AssemClient('http://localhost:4318');
+
+    await client.updateVoiceMode({
+      sessionId: 'session-voice',
+      enabled: true
+    });
+    await client.submitVoiceWakeWindow({
+      sessionId: 'session-voice',
+      audio: {
+        mimeType: 'audio/wav',
+        base64Data: 'UklGRg==',
+        durationMs: 500
+      }
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:4318/api/voice/mode',
+      expect.objectContaining({
+        method: 'POST'
+      })
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://localhost:4318/api/voice/wake-window',
+      expect.objectContaining({
+        method: 'POST'
+      })
+    );
+  });
+
   it('requests the active task for a session through the dedicated endpoint', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: true,

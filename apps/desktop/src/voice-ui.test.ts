@@ -20,7 +20,20 @@ function createVoiceState(
       sttProviderId: 'whisper-cpp',
       ttsProviderId: 'windows-system-tts',
       preferredLanguage: 'es-ES',
-      autoReadResponses: false
+      autoReadResponses: false,
+      voiceModeEnabled: false,
+      micMuted: false,
+      wakeWordEnabled: false,
+      wakeWord: 'prolijo',
+      wakeWordAliases: ['pro lijo', 'polijo'],
+      wakeWindowMs: 5000,
+      wakeIntervalMs: 1000,
+      activeSilenceMs: 900,
+      activeMaxMs: 10000,
+      activeMinSpeechMs: 400,
+      activePrerollMs: 700,
+      activePostrollMs: 500,
+      wakeDebug: false
     },
     sttProviders: [
       {
@@ -51,6 +64,9 @@ function createVoiceState(
       sessionId: 'session-1',
       recordingState: 'idle',
       speakingState: 'idle',
+      voiceModeState: 'idle',
+      wakeModeEnabled: false,
+      micMuted: false,
       microphoneAccessible: true,
       sttProviderId: 'whisper-cpp',
       ttsProviderId: 'windows-system-tts',
@@ -89,6 +105,58 @@ describe('voice-ui helpers', () => {
         })
       )
     ).toBe('Transcribiendo');
+  });
+
+  it('describes conversation mode states without implying hidden recording when off', () => {
+    expect(
+      voiceActivityLabel(
+        createVoiceState({
+          settings: {
+            ...createVoiceState().settings,
+            voiceModeEnabled: false
+          },
+          session: {
+            ...createVoiceState().session!,
+            voiceModeState: 'off',
+            wakeModeEnabled: false
+          }
+        })
+      )
+    ).toBe('Modo conversacion apagado');
+
+    expect(
+      voiceActivityLabel(
+        createVoiceState({
+          settings: {
+            ...createVoiceState().settings,
+            voiceModeEnabled: true
+          },
+          session: {
+            ...createVoiceState().session!,
+            voiceModeState: 'conversation_waiting',
+            wakeModeEnabled: false
+          }
+        })
+      )
+    ).toBe('Esperando voz');
+  });
+
+  it('describes mic mute as a separate privacy state', () => {
+    expect(
+      voiceActivityLabel(
+        createVoiceState({
+          settings: {
+            ...createVoiceState().settings,
+            micMuted: true
+          },
+          session: {
+            ...createVoiceState().session!,
+            voiceModeState: 'muted',
+            micMuted: true
+          }
+        })
+      )
+    ).toBe('Microfono muteado');
   });
 
   it('derives start and stop capture availability from voice state', () => {

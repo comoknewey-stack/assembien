@@ -7,6 +7,9 @@ const TARGET_SAMPLE_RATE_HZ = 16_000;
 const MIN_CAPTURE_DURATION_MS = 250;
 const SILENCE_PEAK_THRESHOLD = 0.015;
 const SILENCE_RMS_THRESHOLD = 0.0035;
+const NORMALIZATION_TARGET_PEAK = 0.86;
+const NORMALIZATION_MIN_PEAK = 0.22;
+const NORMALIZATION_MAX_GAIN = 4;
 
 interface ActiveBrowserRecording {
   stream: MediaStream;
@@ -33,7 +36,8 @@ function concatenateFloat32Chunks(chunks: Float32Array[]): Float32Array {
 export function analyzeMonoPcmCapture(
   samples: Float32Array,
   sampleRate = TARGET_SAMPLE_RATE_HZ,
-  captureSampleRateHz = sampleRate
+  captureSampleRateHz = sampleRate,
+  gainApplied = 1
 ): VoiceAudioDiagnostics {
   let peakLevel = 0;
   let squareSum = 0;
@@ -66,9 +70,40 @@ export function analyzeMonoPcmCapture(
     approximateDurationMs,
     peakLevel: Number(peakLevel.toFixed(5)),
     rmsLevel: Number(rmsLevel.toFixed(5)),
+    gainApplied: Number(gainApplied.toFixed(3)),
     wavValid: true,
     silenceDetected,
     suspicious
+  };
+}
+
+export function normalizeMonoPcmLevel(
+  samples: Float32Array,
+  targetPeak = NORMALIZATION_TARGET_PEAK,
+  minPeak = NORMALIZATION_MIN_PEAK,
+  maxGain = NORMALIZATION_MAX_GAIN
+): { samples: Float32Array; gainApplied: number } {
+  let peakLevel = 0;
+  for (const sample of samples) {
+    peakLevel = Math.max(peakLevel, Math.abs(sample));
+  }
+
+  if (peakLevel <= SILENCE_PEAK_THRESHOLD || peakLevel >= minPeak) {
+    return {
+      samples,
+      gainApplied: 1
+    };
+  }
+
+  const gainApplied = Math.min(maxGain, targetPeak / peakLevel);
+  const normalized = new Float32Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    normalized[index] = Math.max(-1, Math.min(1, (samples[index] ?? 0) * gainApplied));
+  }
+
+  return {
+    samples: normalized,
+    gainApplied
   };
 }
 
@@ -176,7 +211,8 @@ export class BrowserVoiceRecorder {
       audio: {
         channelCount: 1,
         echoCancellation: true,
-        noiseSuppression: true
+        noiseSuppression: true,
+        autoGainControl: true
       }
     });
     const audioContext = new AudioContext();
@@ -223,11 +259,13 @@ export class BrowserVoiceRecorder {
         activeRecording.audioContext.sampleRate,
         TARGET_SAMPLE_RATE_HZ
       );
-      const wavBuffer = encodePcm16Wav(downsampled, TARGET_SAMPLE_RATE_HZ);
+      const normalized = normalizeMonoPcmLevel(downsampled);
+      const wavBuffer = encodePcm16Wav(normalized.samples, TARGET_SAMPLE_RATE_HZ);
       const diagnostics = analyzeMonoPcmCapture(
-        downsampled,
+        normalized.samples,
         TARGET_SAMPLE_RATE_HZ,
-        activeRecording.audioContext.sampleRate
+        activeRecording.audioContext.sampleRate,
+        normalized.gainApplied
       );
 
       return {

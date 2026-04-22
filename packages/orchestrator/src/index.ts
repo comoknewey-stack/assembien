@@ -187,9 +187,19 @@ function isTimeRequest(text: string): boolean {
     /\bcurrent\s+(?:time|date)\b/i.test(normalized) ||
     /\btime\s+now\b/i.test(normalized) ||
     /\bque\s+(?:hora|ahora|fecha|dia)\s+es\b/i.test(normalized) ||
+    /\bque\s+(?:hora|fecha|dia)\s+(?:tenemos|hay)\b/i.test(normalized) ||
     /\b(?:hora|fecha|dia)\s+actual\b/i.test(normalized) ||
+    /\b(?:verifica|verificar|comprueba|comprobar|consulta|consultar|revisa|revisar|dime)\s+(?:la\s+)?(?:hora|fecha|dia)(?:\s+actual)?\b/i.test(normalized) ||
+    /\b(?:verifica|verificar|comprueba|comprobar|consulta|consultar|revisa|revisar)\s+ahora\s+actual\b/i.test(normalized) ||
     /\bfecha\s+de\s+hoy\b/i.test(normalized) ||
     /\bdia\s+de\s+hoy\b/i.test(normalized)
+  );
+}
+
+function hasTemporalToolPlaceholder(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /\b(?:verificar|verifica|consultar|consulta|comprobar|comprueba)\s+(?:la\s+)?(?:hora|fecha|dia|ahora)\s+actual\b/i.test(
+    normalized
   );
 }
 
@@ -202,7 +212,7 @@ function isTemporalDisputeRequest(text: string): boolean {
 
 function isGreetingRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /^(?:hola|hola assem|buenas|buenos dias|buenas tardes|buenas noches|hello|hi|hey)(?:\s+assem)?$/.test(
+  return /^(?:hola|hola assem|buenas|buenos dias|buenas tardes|buenas noches|hello|hi|hey|como estas|como esta|que tal|how are you)(?:\s+assem|\s+por favor|\s+please)?$/.test(
     normalized
   );
 }
@@ -1346,6 +1356,15 @@ export class AssemOrchestrator {
         requiredCapabilities: ['chat'],
         activeProfile: profileSummary
       });
+
+      if (hasTemporalToolPlaceholder(response.text)) {
+        return await this.executeOrQueue(
+          session,
+          'clock-time.get-current',
+          undefined,
+          trace
+        );
+      }
 
       trace.providerId = response.providerId;
       trace.model = response.model;

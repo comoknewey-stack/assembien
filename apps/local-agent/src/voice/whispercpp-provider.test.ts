@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { SpeechToTextAudioInput } from '@assem/shared-types';
+import type { SpeechToTextAudioInput, VoiceSettings } from '@assem/shared-types';
 
 import {
   WhisperCppSpeechToTextProvider,
@@ -13,12 +13,25 @@ import {
 
 const cleanupPaths: string[] = [];
 
-const activeSettings = {
+const activeSettings: VoiceSettings = {
   sttProviderId: 'whisper-cpp',
   ttsProviderId: 'windows-system-tts',
   preferredLanguage: 'es-ES',
-  autoReadResponses: false
-} as const;
+  autoReadResponses: false,
+  voiceModeEnabled: false,
+  micMuted: false,
+  wakeWordEnabled: false,
+  wakeWord: 'prolijo',
+  wakeWordAliases: ['pro lijo', 'polijo'],
+  wakeWindowMs: 2_500,
+  wakeIntervalMs: 500,
+  activeSilenceMs: 2_000,
+  activeMaxMs: 30_000,
+  activeMinSpeechMs: 800,
+  activePrerollMs: 700,
+  activePostrollMs: 500,
+  wakeDebug: false
+};
 
 interface FakeWhisperCliOptions {
   jsonPayload?: unknown;
@@ -230,6 +243,8 @@ describe('WhisperCppSpeechToTextProvider', () => {
       cliPath,
       modelPath,
       threads: 4,
+      initialPrompt: 'ASSEM hora actual sandbox',
+      beamSize: 5,
       tempRoot: path.join(root, 'voice-temp')
     });
 
@@ -297,6 +312,38 @@ describe('WhisperCppSpeechToTextProvider', () => {
     expect(result.effectiveLanguage).toBe('es');
     expect(result.audioDiagnostics?.wavValid).toBe(true);
     expect(args[args.indexOf('--language') + 1]).toBe('es');
+  });
+
+  it('normalizes unsafe whisper tuning values before building cli args', () => {
+    expect(
+      whisperCppProviderInternals.buildWhisperCliArgs({
+        modelPath: 'model.bin',
+        inputPath: 'input.wav',
+        language: 'es-ES',
+        threads: 4,
+        outputPrefix: 'transcript',
+        initialPrompt: '   ASSEM    sandbox   ',
+        beamSize: 99
+      })
+    ).toEqual([
+      '--model',
+      'model.bin',
+      '--file',
+      'input.wav',
+      '--language',
+      'es',
+      '--threads',
+      '4',
+      '--beam-size',
+      '16',
+      '--prompt',
+      'ASSEM sandbox',
+      '--output-json',
+      '--output-file',
+      'transcript',
+      '--no-prints',
+      '--no-timestamps'
+    ]);
   });
 
   it('accepts a useful transcript from the real whisper.cpp transcription array shape', async () => {

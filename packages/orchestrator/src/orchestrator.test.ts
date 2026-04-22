@@ -239,6 +239,18 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
         voiceLanguage: 'es-ES',
         voiceAutoReadResponses: false,
         voiceDebugArtifacts: false,
+        voiceModeEnabledByDefault: false,
+        wakeWordEnabled: false,
+        wakeWord: 'prolijo',
+        wakeWordAliases: ['pro lijo', 'polijo', 'prolijos', 'pro li jo'],
+        wakeWindowMs: 2_500,
+        wakeIntervalMs: 500,
+        activeSilenceMs: 2_000,
+        activeMaxMs: 30_000,
+        activeMinSpeechMs: 800,
+        activePrerollMs: 700,
+        activePostrollMs: 500,
+        wakeDebug: false,
         whisperCppCliPath: undefined,
         whisperCppModelPath: undefined,
         whisperCppThreads: 4,
@@ -302,6 +314,68 @@ describe('AssemOrchestrator', () => {
     expect(getLastAssistantMessage(snapshot)).toContain('martes');
     expect(countTelemetryToolUses(telemetry, 'clock-time.get-current')).toBe(1);
     expect(snapshot.lastModelInvocation).toBeUndefined();
+  });
+
+  it('forces the clock tool for noisy Spanish voice text around "hora actual"', async () => {
+    const { orchestrator, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'verificar ahora actual pero que hora es'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Son las');
+    expect(getLastAssistantMessage(snapshot)).toContain('martes');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('[verificar hora actual]');
+    expect(countTelemetryToolUses(telemetry, 'clock-time.get-current')).toBe(1);
+    expect(snapshot.lastModelInvocation).toBeUndefined();
+  });
+
+  it('answers "como esta" deterministically instead of letting the model invent a time placeholder', async () => {
+    const { orchestrator, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'Como esta, por favor'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Hola.');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('[verificar hora actual]');
+    expect(countTelemetryToolUses(telemetry, 'clock-time.get-current')).toBe(0);
+    expect(snapshot.lastModelInvocation).toBeUndefined();
+  });
+
+  it('does not show model placeholders for time and executes the clock tool instead', async () => {
+    const modelRouter: ModelRouterContract = {
+      listProviders() {
+        return [];
+      },
+      async healthCheck() {
+        return [];
+      },
+      async respond() {
+        return {
+          text: 'Estoy funcionando correctamente. La hora actual es [verificar hora actual].',
+          confidence: 0.6,
+          providerId: 'demo-local',
+          model: 'demo-local-heuristic',
+          fallbackUsed: false,
+          finishReason: 'stop'
+        };
+      }
+    };
+    const { orchestrator, telemetry } = await createOrchestrator({
+      modelRouter
+    });
+    const session = await orchestrator.createSession();
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'necesito una respuesta general'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Son las');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('[verificar hora actual]');
+    expect(countTelemetryToolUses(telemetry, 'clock-time.get-current')).toBe(1);
   });
 
   it('reformulates the same temporal snapshot in Spanish after "en espanol"', async () => {

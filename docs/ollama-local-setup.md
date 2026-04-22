@@ -7,13 +7,13 @@ ASSEM can run against a local Ollama instance and fall back to `demo-local` if O
 ## Recommended Baseline
 
 - Ollama listening on `http://127.0.0.1:11434`
-- A small local model already pulled, for example `llama3.2`
+- A small local model already pulled, for example `llama3.2:latest`
 - ASSEM configured with:
 
 ```bash
 ASSEM_DEFAULT_PROVIDER=ollama
 ASSEM_OLLAMA_BASE_URL=http://127.0.0.1:11434
-ASSEM_OLLAMA_MODEL=llama3.2
+ASSEM_OLLAMA_MODEL=llama3.2:latest
 ASSEM_PROVIDER_TIMEOUT_MS=15000
 ```
 
@@ -26,7 +26,7 @@ Typical local flow:
 3. Pull a test model:
 
 ```bash
-ollama pull llama3.2
+ollama pull llama3.2:latest
 ```
 
 4. If you need to start the server manually:
@@ -55,7 +55,7 @@ In the desktop UI:
   - `Configured provider` should show `ollama`
   - `Configured model` should match `ASSEM_OLLAMA_MODEL`
   - `Runtime provider` should show `ollama` after a model-routed turn
-  - `Current model` should show the model returned by Ollama
+  - the runtime model badges should show the active model after a routed turn, or the resolved configured model before the first real invocation
 - Telemetry card:
   - recent entries show provider/model/result
   - fallback entries show the fallback reason
@@ -99,7 +99,7 @@ Most common cause:
 Fix:
 
 ```bash
-ollama pull llama3.2
+ollama pull llama3.2:latest
 ```
 
 or pull whichever model matches `ASSEM_OLLAMA_MODEL`.

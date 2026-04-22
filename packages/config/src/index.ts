@@ -9,13 +9,28 @@ import { resolveWhisperRuntimePaths } from './whisper-runtime';
 const DEFAULT_AGENT_PORT = 4318;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 15_000;
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
-const DEFAULT_OLLAMA_MODEL = 'llama3.2';
+const DEFAULT_OLLAMA_MODEL = 'llama3.2:latest';
 const DEFAULT_VOICE_STT_PROVIDER = 'whisper-cpp';
 const DEFAULT_VOICE_TTS_PROVIDER = 'windows-system-tts';
 const DEFAULT_VOICE_LANGUAGE = 'es-ES';
 const DEFAULT_VOICE_AUTO_READ_RESPONSES = false;
 const DEFAULT_VOICE_DEBUG_ARTIFACTS = false;
+const DEFAULT_VOICE_MODE_ENABLED_BY_DEFAULT = false;
+const DEFAULT_WAKE_WORD_ENABLED = false;
+const DEFAULT_WAKE_WORD = 'prolijo';
+const DEFAULT_WAKE_WORD_ALIASES = ['pro lijo', 'polijo', 'prolijos', 'pro li jo'];
+const DEFAULT_WAKE_WINDOW_MS = 2_500;
+const DEFAULT_WAKE_INTERVAL_MS = 500;
+const DEFAULT_ACTIVE_SILENCE_MS = 2_000;
+const DEFAULT_ACTIVE_MAX_MS = 30_000;
+const DEFAULT_ACTIVE_MIN_SPEECH_MS = 800;
+const DEFAULT_ACTIVE_PREROLL_MS = 700;
+const DEFAULT_ACTIVE_POSTROLL_MS = 500;
+const DEFAULT_WAKE_DEBUG = false;
 const DEFAULT_WHISPER_CPP_THREADS = Math.max(2, Math.min(8, Math.floor(os.cpus().length / 2) || 2));
+const DEFAULT_WHISPER_CPP_BEAM_SIZE = 5;
+const DEFAULT_WHISPER_CPP_INITIAL_PROMPT =
+  'ASSEM. Comandos frecuentes en espanol: que hora es, hora actual, fecha actual, crear archivo, crear carpeta, lista el sandbox, lee el archivo, confirma, cancela, Ollama, whisper.cpp.';
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:1420',
   'http://127.0.0.1:1420',
@@ -106,12 +121,30 @@ function parseAllowedOrigins(value?: string): string[] {
     .filter(Boolean);
 }
 
+function parseStringList(value: string | undefined, fallback: string[]): string[] {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return parsed.length > 0 ? parsed : fallback;
+}
+
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) {
     return fallback;
   }
 
   return /^(1|true|yes|on)$/i.test(value.trim());
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function resolveOptionalPath(value: string | undefined): string | undefined {
@@ -183,6 +216,55 @@ export function createAssemConfig(
     voiceDebugArtifacts:
       overrides.voiceDebugArtifacts ??
       parseBoolean(process.env.ASSEM_VOICE_DEBUG, DEFAULT_VOICE_DEBUG_ARTIFACTS),
+    voiceModeEnabledByDefault:
+      overrides.voiceModeEnabledByDefault ??
+      parseBoolean(
+        process.env.ASSEM_VOICE_MODE_ENABLED_BY_DEFAULT,
+        DEFAULT_VOICE_MODE_ENABLED_BY_DEFAULT
+      ),
+    wakeWordEnabled:
+      overrides.wakeWordEnabled ??
+      parseBoolean(process.env.ASSEM_WAKE_WORD_ENABLED, DEFAULT_WAKE_WORD_ENABLED),
+    wakeWord:
+      overrides.wakeWord ??
+      process.env.ASSEM_WAKE_WORD ??
+      DEFAULT_WAKE_WORD,
+    wakeWordAliases:
+      overrides.wakeWordAliases ??
+      parseStringList(process.env.ASSEM_WAKE_WORD_ALIASES, DEFAULT_WAKE_WORD_ALIASES),
+    wakeWindowMs:
+      overrides.wakeWindowMs ??
+      parsePositiveInteger(process.env.ASSEM_WAKE_WINDOW_MS, DEFAULT_WAKE_WINDOW_MS),
+    wakeIntervalMs:
+      overrides.wakeIntervalMs ??
+      parsePositiveInteger(process.env.ASSEM_WAKE_INTERVAL_MS, DEFAULT_WAKE_INTERVAL_MS),
+    activeSilenceMs:
+      overrides.activeSilenceMs ??
+      parsePositiveInteger(process.env.ASSEM_ACTIVE_SILENCE_MS, DEFAULT_ACTIVE_SILENCE_MS),
+    activeMaxMs:
+      overrides.activeMaxMs ??
+      parsePositiveInteger(process.env.ASSEM_ACTIVE_MAX_MS, DEFAULT_ACTIVE_MAX_MS),
+    activeMinSpeechMs:
+      overrides.activeMinSpeechMs ??
+      parsePositiveInteger(
+        process.env.ASSEM_ACTIVE_MIN_SPEECH_MS,
+        DEFAULT_ACTIVE_MIN_SPEECH_MS
+      ),
+    activePrerollMs:
+      overrides.activePrerollMs ??
+      parsePositiveInteger(
+        process.env.ASSEM_ACTIVE_PREROLL_MS,
+        DEFAULT_ACTIVE_PREROLL_MS
+      ),
+    activePostrollMs:
+      overrides.activePostrollMs ??
+      parsePositiveInteger(
+        process.env.ASSEM_ACTIVE_POSTROLL_MS,
+        DEFAULT_ACTIVE_POSTROLL_MS
+      ),
+    wakeDebug:
+      overrides.wakeDebug ??
+      parseBoolean(process.env.ASSEM_WAKE_DEBUG, DEFAULT_WAKE_DEBUG),
     whisperCppCliPath:
       overrides.whisperCppCliPath ??
       resolveOptionalPath(process.env.ASSEM_WHISPER_CPP_CLI_PATH) ??
@@ -193,9 +275,19 @@ export function createAssemConfig(
       whisperRuntimePaths.modelPath,
     whisperCppThreads:
       overrides.whisperCppThreads ??
-      Number.parseInt(
-        process.env.ASSEM_WHISPER_CPP_THREADS ?? `${DEFAULT_WHISPER_CPP_THREADS}`,
-        10
+      parsePositiveInteger(
+        process.env.ASSEM_WHISPER_CPP_THREADS,
+        DEFAULT_WHISPER_CPP_THREADS
+      ),
+    whisperCppInitialPrompt:
+      overrides.whisperCppInitialPrompt ??
+      process.env.ASSEM_WHISPER_CPP_INITIAL_PROMPT ??
+      DEFAULT_WHISPER_CPP_INITIAL_PROMPT,
+    whisperCppBeamSize:
+      overrides.whisperCppBeamSize ??
+      parsePositiveInteger(
+        process.env.ASSEM_WHISPER_CPP_BEAM_SIZE,
+        DEFAULT_WHISPER_CPP_BEAM_SIZE
       ),
     allowedOrigins:
       overrides.allowedOrigins ??

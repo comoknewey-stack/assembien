@@ -31,6 +31,8 @@ interface WhisperCppSpeechToTextProviderOptions {
   cliPath?: string;
   modelPath?: string;
   threads: number;
+  initialPrompt?: string;
+  beamSize?: number;
   tempRoot?: string;
   debugArtifacts?: boolean;
 }
@@ -55,6 +57,8 @@ interface WhisperProviderResolvedOptions {
   cliPath?: string;
   modelPath?: string;
   threads: number;
+  initialPrompt?: string;
+  beamSize?: number;
   tempRoot: string;
   debugArtifacts: boolean;
 }
@@ -137,6 +141,60 @@ function normalizeWhisperLanguage(language: string | undefined): string {
 
   const neutral = normalized.split('-')[0]?.trim();
   return neutral || 'auto';
+}
+
+function sanitizeInitialPrompt(prompt: string | undefined): string | undefined {
+  const normalized = prompt?.replace(/\s+/g, ' ').trim();
+  return normalized || undefined;
+}
+
+function normalizeBeamSize(beamSize: number | undefined): number | undefined {
+  if (!Number.isFinite(beamSize) || !beamSize || beamSize < 2) {
+    return undefined;
+  }
+
+  return Math.max(2, Math.min(16, Math.floor(beamSize)));
+}
+
+function buildWhisperCliArgs(options: {
+  modelPath: string;
+  inputPath: string;
+  language: string;
+  threads: number;
+  outputPrefix: string;
+  initialPrompt?: string;
+  beamSize?: number;
+}): string[] {
+  const args = [
+    '--model',
+    options.modelPath,
+    '--file',
+    options.inputPath,
+    '--language',
+    normalizeWhisperLanguage(options.language),
+    '--threads',
+    `${options.threads}`
+  ];
+  const beamSize = normalizeBeamSize(options.beamSize);
+  const initialPrompt = sanitizeInitialPrompt(options.initialPrompt);
+
+  if (beamSize) {
+    args.push('--beam-size', `${beamSize}`);
+  }
+
+  if (initialPrompt) {
+    args.push('--prompt', initialPrompt);
+  }
+
+  args.push(
+    '--output-json',
+    '--output-file',
+    options.outputPrefix,
+    '--no-prints',
+    '--no-timestamps'
+  );
+
+  return args;
 }
 
 function resolveAudioExtension(
@@ -507,6 +565,10 @@ function describeAudioDiagnostics(audio: VoiceAudioDiagnostics): string {
     parts.push(`rms ${audio.rmsLevel}`);
   }
 
+  if (typeof audio.gainApplied === 'number' && audio.gainApplied > 1) {
+    parts.push(`ganancia x${audio.gainApplied}`);
+  }
+
   return parts.join(', ');
 }
 
@@ -669,21 +731,15 @@ async function runSelfCheck(
 
     await runCommand(
       options.cliPath,
-      [
-        '--model',
-        options.modelPath,
-        '--file',
+      buildWhisperCliArgs({
+        modelPath: options.modelPath,
         inputPath,
-        '--language',
-        normalizeWhisperLanguage(language),
-        '--threads',
-        '1',
-        '--output-json',
-        '--output-file',
+        language,
+        threads: 1,
         outputPrefix,
-        '--no-prints',
-        '--no-timestamps'
-      ],
+        initialPrompt: options.initialPrompt,
+        beamSize: options.beamSize
+      }),
       SELF_CHECK_TIMEOUT_MS
     );
 
@@ -944,21 +1000,15 @@ async function transcribeWithWhisperCpp(
       );
     }
 
-    const args = [
-      '--model',
-      options.modelPath!,
-      '--file',
+    const args = buildWhisperCliArgs({
+      modelPath: options.modelPath!,
       inputPath,
-      '--language',
-      effectiveLanguage,
-      '--threads',
-      `${options.threads}`,
-      '--output-json',
-      '--output-file',
+      language: effectiveLanguage,
+      threads: options.threads,
       outputPrefix,
-      '--no-prints',
-      '--no-timestamps'
-    ];
+      initialPrompt: options.initialPrompt,
+      beamSize: options.beamSize
+    });
 
     try {
       await runCommand(options.cliPath!, args, TRANSCRIPTION_TIMEOUT_MS);
@@ -1288,6 +1338,8 @@ export class WhisperCppSpeechToTextProvider implements SpeechToTextProvider {
       cliPath: this.options.cliPath,
       modelPath: this.options.modelPath,
       threads: this.options.threads,
+      initialPrompt: sanitizeInitialPrompt(this.options.initialPrompt),
+      beamSize: normalizeBeamSize(this.options.beamSize),
       tempRoot: this.options.tempRoot ?? path.join(os.tmpdir(), 'assem-whispercpp'),
       debugArtifacts: this.options.debugArtifacts ?? false
     };
@@ -1303,6 +1355,7 @@ export const whisperCppProviderInternals = {
   countUsefulTranscriptCharacters,
   isTranscriptUseful,
   analyzeTranscriptPayload,
+  buildWhisperCliArgs,
   inspectWavBuffer,
   createSilentWavBuffer,
   cleanupStaleWhisperTempArtifacts

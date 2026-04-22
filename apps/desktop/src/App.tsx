@@ -12,7 +12,9 @@ import type {
   SystemStateSnapshot,
   TaskPlan,
   TaskRefinement,
-  VoiceAudioDiagnostics
+  VoiceAudioDiagnostics,
+  VoiceModeState,
+  VoiceSystemState
 } from '@assem/shared-types';
 
 import {
@@ -22,11 +24,29 @@ import {
   voiceActivityLabel,
   voiceAvailabilityLabel
 } from './voice-ui';
+import {
+  AssistantStatusPanel,
+  SidebarSummary
+} from './assistant-panels';
+import { AssistantCore, resolveAssistantCoreState } from './assistant-core';
 import { BrowserVoiceRecorder } from './audio-recorder';
+import { ConversationPane } from './conversation-pane';
+import { resolveRuntimeModelDisplay } from './runtime-display';
+import { VoiceOrb, resolveVoiceOrbState } from './voice-orb';
+import { BrowserConversationModeLoop } from './wake-mode-loop';
 
-type Tab = 'history' | 'permissions' | 'system' | 'voice' | 'profiles' | 'schedule' | 'settings';
+type Tab =
+  | 'status'
+  | 'history'
+  | 'permissions'
+  | 'system'
+  | 'voice'
+  | 'profiles'
+  | 'schedule'
+  | 'settings';
 
 const tabs: Array<[Tab, string]> = [
+  ['status', 'Estado'],
   ['history', 'Historial'],
   ['permissions', 'Confirmaciones'],
   ['system', 'Sistema'],
@@ -45,6 +65,23 @@ const prompts = [
 ];
 
 const SESSION_STORAGE_KEY = 'assem-session-id';
+const APP_VERSION = '0.1.0';
+
+function formatClock(value: Date): string {
+  return new Intl.DateTimeFormat('es-ES', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(value);
+}
+
+function formatClockDate(value: Date): string {
+  return new Intl.DateTimeFormat('es-ES', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short'
+  }).format(value);
+}
 
 function fmt(value?: string): string {
   return value
@@ -241,6 +278,10 @@ function formatVoiceAudioDiagnostics(audio: VoiceAudioDiagnostics | undefined): 
     details.push(`pico ${audio.peakLevel}`);
   }
 
+  if (typeof audio.gainApplied === 'number' && audio.gainApplied > 1) {
+    details.push(`ganancia x${audio.gainApplied}`);
+  }
+
   if (audio.silenceDetected) {
     details.push('silencio detectado');
   }
@@ -382,6 +423,11 @@ export default function App() {
     new AssemClient(import.meta.env.VITE_ASSEM_AGENT_URL ?? 'http://localhost:4318')
   );
   const browserVoiceRecorderRef = useRef<BrowserVoiceRecorder | null>(null);
+  const conversationModeLoopRef = useRef<BrowserConversationModeLoop | null>(null);
+  const conversationModeLoopSessionIdRef = useRef<string | null>(null);
+  const conversationModeLoopSettingsRef = useRef<string | null>(null);
+  const latestVoiceRef = useRef<VoiceSystemState | null>(null);
+  const latestSessionIdRef = useRef<string | null>(null);
 
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
   const [systemState, setSystemState] = useState<SystemStateSnapshot | null>(null);
@@ -389,7 +435,7 @@ export default function App() {
     privacy: 'local_only',
     runtime: 'sandbox'
   });
-  const [sidebarTab, setSidebarTab] = useState<Tab>('history');
+  const [sidebarTab, setSidebarTab] = useState<Tab>('status');
   const [composeValue, setComposeValue] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -404,6 +450,8 @@ export default function App() {
   const [taskKind, setTaskKind] = useState<ScheduledTask['kind']>('reminder');
   const [taskCadence, setTaskCadence] = useState<ScheduledTask['cadence']>('manual');
   const [taskScheduleAt, setTaskScheduleAt] = useState('');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const [clockNow, setClockNow] = useState(() => new Date());
 
   const currentSession = snapshot ?? systemState?.session ?? null;
   const profiles = systemState?.profiles ?? [];
@@ -425,26 +473,38 @@ export default function App() {
   const providerRuntime = systemState?.providerRuntime;
   const voice = systemState?.voice ?? null;
   const voiceSession = voice?.session ?? null;
+  latestVoiceRef.current = voice;
+  latestSessionIdRef.current = currentSession?.sessionId ?? null;
   const effectiveVoiceLanguage =
     voiceSession?.lastTranscriptionLanguage ?? voice?.settings.preferredLanguage ?? 'sin definir';
   const latestVoiceDiagnostic = voiceSession?.lastDiagnostic;
   const latestVoiceAudio = voiceSession?.lastAudioDiagnostics;
+  const latestWakeVoiceDiagnostic = voiceSession?.lastWakeDiagnostic;
+  const latestWakeVoiceAudio = voiceSession?.lastWakeAudioDiagnostics;
+  const voiceOrbState = resolveVoiceOrbState(voice);
   const selectedSttProvider = voice?.sttProviders.find(
     (provider) => provider.providerId === voice.settings.sttProviderId
   );
   const selectedTtsProvider = voice?.ttsProviders.find(
     (provider) => provider.providerId === voice.settings.ttsProviderId
   );
+  const voiceDiagnosticSummary = latestVoiceDiagnostic?.summary;
+  const wakeVoiceDiagnosticSummary = latestWakeVoiceDiagnostic?.summary;
   const telemetry = systemState?.telemetry;
   const configuredProvider = providerHealth.find(
     (provider) => provider.providerId === providerRuntime?.configuredDefaultProviderId
   );
+  const runtimeModelDisplay = resolveRuntimeModelDisplay(providerRuntime);
+  const configuredProviderLabel = providerLabel(
+    providerRuntime?.activeProviderId ?? providerRuntime?.configuredDefaultProviderId,
+    'sin uso'
+  );
+  const sessionMetaLabel = (currentSession?.sessionId ?? 'sin sesion').slice(0, 6).toUpperCase();
   const recentTelemetry = telemetry?.recent ?? [];
   const sessions = systemState?.sessions ?? [];
   const messages = currentSession?.messages ?? [];
   const latestAssistantMessage =
     [...messages].reverse().find((message) => message.role === 'assistant') ?? null;
-  const hasMessages = messages.length > 0;
   const actionLog = [...(currentSession?.actionLog ?? [])].reverse();
   const overrides = currentSession?.temporaryOverrides ?? [];
   const pendingActions = currentSession?.pendingAction
@@ -454,7 +514,10 @@ export default function App() {
   const lastAction = actionLog[0] ?? null;
   const lastTelemetry = recentTelemetry[0] ?? null;
   const busy = isBusy || isVoiceBusy;
-  const canStartRecording = canStartVoiceCapture(voice, Boolean(currentSession), busy);
+  const voiceModeEnabled = voice?.settings.voiceModeEnabled ?? false;
+  const micMuted = voice?.settings.micMuted ?? false;
+  const canStartRecording =
+    canStartVoiceCapture(voice, Boolean(currentSession), busy) && !voiceModeEnabled && !micMuted;
   const canStopRecording = canStopVoiceCapture(voice, Boolean(currentSession), busy);
   const canPlayLatestReply = canSpeakAssistantReply(
     voice,
@@ -462,6 +525,14 @@ export default function App() {
     Boolean(latestAssistantMessage),
     busy
   );
+  const assistantCoreState = resolveAssistantCoreState({
+    voice,
+    activeTask: activeConversationTask,
+    isBusy: busy,
+    hasError: Boolean(error)
+  });
+  const clockLabel = formatClock(clockNow);
+  const clockDateLabel = formatClockDate(clockNow);
 
   function isWhisperCppSelected(): boolean {
     return voice?.settings.sttProviderId === 'whisper-cpp';
@@ -549,6 +620,168 @@ export default function App() {
     }
   }
 
+  async function stopConversationModeLoop(): Promise<void> {
+    const loop = conversationModeLoopRef.current;
+    conversationModeLoopRef.current = null;
+    conversationModeLoopSessionIdRef.current = null;
+    conversationModeLoopSettingsRef.current = null;
+    await loop?.stop().catch(() => undefined);
+  }
+
+  function startConversationModeLoop(sessionId: string, sourceVoice: VoiceSystemState | null = latestVoiceRef.current): void {
+    const settings = sourceVoice?.settings;
+    const loopSettings = {
+      activeSilenceMs: settings?.activeSilenceMs ?? 2_000,
+      activeMaxMs: settings?.activeMaxMs ?? 30_000,
+      activeMinSpeechMs: settings?.activeMinSpeechMs ?? 800,
+      activePrerollMs: settings?.activePrerollMs ?? 700,
+      activePostrollMs: settings?.activePostrollMs ?? 500,
+      idleIntervalMs: 150
+    };
+    const loopSettingsKey = JSON.stringify(loopSettings);
+
+    if (
+      conversationModeLoopRef.current &&
+      conversationModeLoopSessionIdRef.current === sessionId &&
+      conversationModeLoopSettingsRef.current === loopSettingsKey
+    ) {
+      return;
+    }
+
+    if (conversationModeLoopRef.current) {
+      void stopConversationModeLoop().then(() => startConversationModeLoop(sessionId, sourceVoice));
+      return;
+    }
+
+    const loop = new BrowserConversationModeLoop(
+      loopSettings,
+      {
+        shouldCaptureTurn: () => {
+          const currentVoice = latestVoiceRef.current;
+          const currentSessionId = latestSessionIdRef.current;
+          const currentVoiceSession = currentVoice?.session;
+
+          return Boolean(
+            currentSessionId === sessionId &&
+              currentVoice?.settings.voiceModeEnabled &&
+              !currentVoice.settings.micMuted &&
+              currentVoiceSession?.speakingState !== 'speaking' &&
+              currentVoiceSession?.recordingState !== 'recording' &&
+              currentVoiceSession?.recordingState !== 'transcribing'
+          );
+        },
+        onConversationWaiting: async () => {
+          const currentVoice = latestVoiceRef.current;
+          if (currentVoice?.session?.voiceModeState === 'conversation_waiting') {
+            return;
+          }
+
+          const response = await clientRef.current.updateVoiceActiveListeningState({
+            sessionId,
+            state: 'conversation_waiting',
+            audioDurationMs: 0
+          });
+          applyVoiceState(response.voice);
+        },
+        onActiveListeningStart: async () => {
+          const state = await clientRef.current.startVoiceActiveListening({
+            sessionId
+          });
+          applyVoiceState(state.voice);
+        },
+        onActiveState: async (state: VoiceModeState, audioDurationMs: number) => {
+          const response = await clientRef.current.updateVoiceActiveListeningState({
+            sessionId,
+            state,
+            audioDurationMs
+          });
+          applyVoiceState(response.voice);
+        },
+        onActiveAudio: async (audio, reason) => {
+          const response = await clientRef.current.stopVoiceActiveListening({
+            sessionId,
+            audio,
+            reason
+          });
+          if (response.snapshot) {
+            applySnapshot(response.snapshot);
+          }
+          applyVoiceState(response.voice);
+        },
+        onActiveNoSpeech: async () => {
+          const response = await clientRef.current.stopVoiceActiveListening({
+            sessionId,
+            reason: 'no_speech'
+          });
+          applyVoiceState(response.voice);
+        },
+        onError: (caughtError) => {
+          setError(caughtError.message);
+          void stopConversationModeLoop();
+          void clientRef.current
+            .updateVoiceMode({
+              sessionId,
+              enabled: false
+            })
+            .then((response) => applyVoiceState(response.voice))
+            .catch(() => undefined);
+        }
+      }
+    );
+
+    conversationModeLoopRef.current = loop;
+    conversationModeLoopSessionIdRef.current = sessionId;
+    conversationModeLoopSettingsRef.current = loopSettingsKey;
+    loop.start();
+  }
+
+  async function toggleVoiceMode(nextEnabled: boolean): Promise<void> {
+    if (!currentSession) {
+      return;
+    }
+
+    await runVoiceBusy(async () => {
+      if (!nextEnabled) {
+        await stopConversationModeLoop();
+      }
+
+      const response = await clientRef.current.updateVoiceMode({
+        sessionId: currentSession.sessionId,
+        enabled: nextEnabled
+      });
+      applyVoiceState(response.voice);
+
+      if (nextEnabled && !response.voice.settings.micMuted) {
+        startConversationModeLoop(currentSession.sessionId, response.voice);
+      }
+    });
+  }
+
+  useEffect(() => {
+    const sessionId = currentSession?.sessionId;
+    if (!sessionId || !voice?.settings.voiceModeEnabled || voice.settings.micMuted) {
+      void stopConversationModeLoop();
+      return;
+    }
+
+    startConversationModeLoop(sessionId, voice);
+  }, [
+    currentSession?.sessionId,
+    voice?.settings.voiceModeEnabled,
+    voice?.settings.micMuted,
+    voice?.settings.activeSilenceMs,
+    voice?.settings.activeMaxMs,
+    voice?.settings.activeMinSpeechMs,
+    voice?.settings.activePrerollMs,
+    voice?.settings.activePostrollMs
+  ]);
+
+  useEffect(() => {
+    return () => {
+      void stopConversationModeLoop();
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -622,6 +855,12 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setClockNow(new Date()), 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
   async function sendMessage(text: string) {
     const trimmed = text.trim();
     if (!trimmed || !currentSession) {
@@ -680,6 +919,28 @@ export default function App() {
         currentSession?.sessionId
       );
       applyVoiceState(response.voice);
+    });
+  }
+
+  async function toggleMicMuted(nextValue: boolean) {
+    await runVoiceBusy(async () => {
+      if (nextValue) {
+        await stopConversationModeLoop();
+      }
+
+      const response = await clientRef.current.updateVoiceSettings(
+        {
+          settings: {
+            micMuted: nextValue
+          }
+        },
+        currentSession?.sessionId
+      );
+      applyVoiceState(response.voice);
+
+      if (!nextValue && currentSession && response.voice.settings.voiceModeEnabled) {
+        startConversationModeLoop(currentSession.sessionId, response.voice);
+      }
     });
   }
 
@@ -794,72 +1055,282 @@ export default function App() {
     void sendMessage(composeValue);
   }
 
+  function openSidebar(tab?: Tab) {
+    if (tab) {
+      setSidebarTab(tab);
+    }
+    setIsSidebarCollapsed(false);
+  }
+
   return (
     <div className="shell">
       <div className="shell__backdrop" />
       <header className="topbar">
-        <div>
-          <p className="eyebrow">ASSEM MVP</p>
-          <h1>Espacio local de ASSEM</h1>
+        <button
+          aria-expanded={!isSidebarCollapsed}
+          aria-label="Abrir menu de paneles"
+          className="topbar__menu"
+          onClick={() => setIsSidebarCollapsed((current) => !current)}
+          type="button"
+        >
+          <span />
+          <span />
+          <span />
+        </button>
+        <div className="topbar__brand">
+          <p className="eyebrow">Asistente personal local</p>
+          <h1>ASSEM</h1>
           <p className="panel-copy">
-            Agente persistente, herramientas seguras, memoria de perfiles y tareas programadas.
+            Interfaz local de asistente
           </p>
         </div>
-        <div className="topbar__status">
-          <span className="pill">{healthStatusLabel(systemState?.health.status)}</span>
-          <span className="pill pill--accent">{modeLabel(uiMode)}</span>
-          <span className="pill">
-            Configurado: {providerLabel(providerRuntime?.configuredDefaultProviderId)}
-          </span>
-          <span className="pill">
-            Proveedor activo: {providerLabel(providerRuntime?.activeProviderId, 'sin uso')}
-          </span>
-          <span className="pill">Modelo: {providerRuntime?.activeModel ?? 'pendiente'}</span>
-          {providerRuntime?.resolvedModel &&
-            providerRuntime.resolvedModel !== providerRuntime.configuredModel && (
-              <span className="pill">
-                Resuelto: {providerRuntime.resolvedModel}
-              </span>
-            )}
-          <span className="pill">Voz: {voiceAvailabilityLabel(voice)}</span>
-          <span className="pill">Actividad: {voiceActivityLabel(voice)}</span>
-          <span className="pill">Perfil: {activeProfile?.name ?? 'Ninguno'}</span>
-        </div>
+        <time className="topbar__clock" dateTime={clockNow.toISOString()}>
+          <span>{clockLabel}</span>
+          <small>{clockDateLabel}</small>
+        </time>
       </header>
 
-      <main className="layout">
-        <aside className="sidebar">
+      <main className={`layout${isSidebarCollapsed ? '' : ' layout--drawer-open'}`}>
+        <section className="chat hud-cockpit">
+          <aside className="hud-left-controls" aria-label="Controles principales de voz">
+            <button
+              aria-pressed={voiceModeEnabled}
+              className={`voice-mode-beacon voice-mode-beacon--${micMuted ? 'muted' : voiceModeEnabled ? voiceOrbState : 'off'}`}
+              disabled={!currentSession || (busy && !voiceModeEnabled)}
+              onClick={() => void toggleVoiceMode(!voiceModeEnabled)}
+              type="button"
+            >
+              <span>{micMuted ? 'MIC OFF' : 'CONVERSACION'}</span>
+              <strong>
+                {micMuted
+                  ? 'Microfono muteado'
+                  : voiceModeEnabled
+                    ? voiceActivityLabel(voice)
+                    : 'Modo conversacion apagado'}
+              </strong>
+              <small>
+                {micMuted
+                  ? 'Corte fuerte de privacidad'
+                  : voiceModeEnabled
+                    ? 'Escucha turnos hasta apagarlo'
+                    : 'Microfono cerrado'}
+              </small>
+            </button>
+
+            <div className="voice-control-rail">
+              <span className="voice-control-rail__label">Push-to-talk</span>
+              <button className="primary" disabled={!canStartRecording} onClick={() => void startVoiceRecording()} type="button">
+                Hablar
+              </button>
+              <button disabled={!canStopRecording} onClick={() => void stopVoiceRecording()} type="button">
+                Detener y enviar
+              </button>
+              <button disabled={voiceSession?.recordingState !== 'recording' || busy} onClick={() => void cancelVoiceRecording()} type="button">
+                Cancelar
+              </button>
+              <button disabled={!canPlayLatestReply} onClick={() => void speakLatestAssistantReply()} type="button">
+                Leer ultima
+              </button>
+              <button disabled={voiceSession?.speakingState !== 'speaking' || busy} onClick={() => void stopAssistantSpeech()} type="button">
+                Parar voz
+              </button>
+              <label className="voice-control-rail__toggle">
+                <input
+                  checked={voice?.settings.autoReadResponses ?? false}
+                  disabled={busy}
+                  onChange={(event) => void toggleAutoReadResponses(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Autolectura</span>
+              </label>
+              <label className="voice-control-rail__toggle voice-control-rail__toggle--danger">
+                <input
+                  checked={micMuted}
+                  disabled={busy}
+                  onChange={(event) => void toggleMicMuted(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>Mute micro</span>
+              </label>
+            </div>
+          </aside>
+
+          <div className="hud-center">
+            <AssistantCore
+              state={assistantCoreState}
+              voiceActivityLabel={voiceActivityLabel(voice)}
+              voiceAvailabilityLabel={voiceAvailabilityLabel(voice)}
+              voiceModeEnabled={voiceModeEnabled}
+            />
+
+            <div className="hud-status-strip" aria-label="Resumen de estado">
+              <span>Runtime {configuredProviderLabel}</span>
+              <span>{runtimeModelDisplay.label}: {runtimeModelDisplay.value}</span>
+              <span>{modeLabel(uiMode)}</span>
+              <span>
+                Voz {voiceAvailabilityLabel(voice)} / {micMuted ? 'mic off' : voiceModeEnabled ? 'conversacion' : 'manual'}
+              </span>
+              {pendingActions.length > 0 ? (
+                <button className="pill pill--button pill--accent" onClick={() => openSidebar('permissions')} type="button">
+                  {pendingActions.length} confirmacion{pendingActions.length === 1 ? '' : 'es'}
+                </button>
+              ) : (
+                <span>Sin confirmaciones</span>
+              )}
+            </div>
+
+            <div className="hud-middle-stack">
+              {error && (
+                <div className="banner banner--error">
+                  <strong>Error del agente local</strong>
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <article className={`hud-task-card${activeConversationTask ? '' : ' hud-task-card--idle'}`}>
+                <div>
+                  <span className="summary-card__label">Tarea activa</span>
+                  <strong>
+                    {activeConversationTask
+                      ? activeConversationTask.objective
+                      : 'Sin tarea larga activa'}
+                  </strong>
+                </div>
+                <div className="hud-task-card__meter" aria-hidden="true">
+                  <span
+                    style={{
+                      width: `${Math.max(0, Math.min(100, activeConversationTask?.progressPercent ?? 0))}%`
+                    }}
+                  />
+                </div>
+                <div className="hud-task-card__meta">
+                  <span>{taskStatusLabel(activeConversationTask?.status)}</span>
+                  <span>{taskProgressLabel(activeConversationTask)}</span>
+                  <span>{activeConversationTask?.currentPhase ?? 'sin fase'}</span>
+                  <span>{activeConversationTaskStep?.label ?? 'sin paso activo'}</span>
+                  {activeConversationTaskArtifacts[0] && <span>Artefacto: {activeConversationTaskArtifacts[0].label}</span>}
+                  {activeConversationTaskRefinements[0] && <span>Ajuste: {activeConversationTaskRefinements[0].label}</span>}
+                </div>
+              </article>
+            </div>
+
+            <ConversationPane
+              disabled={isBusy || !currentSession}
+              formatTimestamp={fmt}
+              hasActiveTask={Boolean(activeConversationTask)}
+              latestTranscript={voiceSession?.lastTranscript}
+              messages={messages}
+              onSelectPrompt={(prompt) => void sendMessage(prompt)}
+              prompts={prompts}
+              voiceActivityLabel={voiceActivityLabel(voice)}
+            />
+
+            <form
+              className="composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void sendMessage(composeValue);
+              }}
+            >
+              <div className="command-bar">
+                <textarea
+                  disabled={!currentSession || isBusy}
+                  rows={1}
+                  value={composeValue}
+                  onChange={(event) => setComposeValue(event.target.value)}
+                  onKeyDown={handleComposerKeyDown}
+                  placeholder='Escribe un comando para ASSEM...'
+                />
+                <button className="primary" disabled={!currentSession || isBusy || !composeValue.trim()} type="submit">
+                  {isBusy ? '...' : 'Enviar'}
+                </button>
+              </div>
+              <div className="composer__footer">
+                <div className="hud-meta-strip">
+                  <span>v{APP_VERSION}</span>
+                  <span>Sesion #{sessionMetaLabel}</span>
+                  <span>Perfil {activeProfile?.name ?? 'ninguno'}</span>
+                  <span>{voiceSession?.lastTranscript ? `Ultimo transcript: ${voiceSession.lastTranscript}` : 'Sin transcript reciente'}</span>
+                </div>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        {!isSidebarCollapsed && (
+          <button
+            aria-label="Cerrar menu de paneles"
+            className="sidebar__scrim"
+            onClick={() => setIsSidebarCollapsed(true)}
+            type="button"
+          />
+        )}
+
+        <aside className={`sidebar sidebar--drawer${isSidebarCollapsed ? ' sidebar--collapsed' : ' sidebar--open'}`}>
+          <div className="sidebar__rail-header">
+            <div>
+              <span className="summary-card__label">Paneles</span>
+              <strong>Menu ASSEM</strong>
+            </div>
+            <button
+              aria-expanded={!isSidebarCollapsed}
+              className="sidebar__collapse"
+              onClick={() => setIsSidebarCollapsed((current) => !current)}
+              title={isSidebarCollapsed ? 'Abrir panel secundario' : 'Colapsar panel secundario'}
+              type="button"
+            >
+              {isSidebarCollapsed ? 'Abrir' : 'Cerrar'}
+            </button>
+          </div>
           <div className="sidebar__tabs">
             {tabs.map(([id, label]) => (
               <button
                 key={id}
+                aria-label={label}
                 className={sidebarTab === id ? 'is-active' : ''}
                 onClick={() => setSidebarTab(id)}
+                title={label}
                 type="button"
               >
-                {label}
+                <span className="sidebar__tab-mark">{label.slice(0, 1)}</span>
+                <span className="sidebar__tab-label">{label}</span>
               </button>
             ))}
           </div>
 
           <div className="sidebar__panel">
-            <section className="sidebar__summary">
-              <article className="summary-card">
-                <span className="summary-card__label">Estado</span>
-                <strong>{healthStatusLabel(systemState?.health.status)}</strong>
-                <p>{modeLabel(uiMode)}</p>
-              </article>
-              <article className="summary-card">
-                <span className="summary-card__label">Pendientes</span>
-                <strong>{pendingActions.length}</strong>
-                <p>{pendingActions.length === 1 ? 'accion pendiente' : 'acciones pendientes'}</p>
-              </article>
-              <article className="summary-card">
-                <span className="summary-card__label">Tareas</span>
-                <strong>{enabledScheduledTaskCount}</strong>
-                <p>{tasks.length === 1 ? 'tarea total' : 'tareas totales'}</p>
-              </article>
-            </section>
+            <SidebarSummary
+              activeTask={activeConversationTask}
+              activeTaskStatusLabel={taskStatusLabel(activeConversationTask?.status)}
+              healthLabel={healthStatusLabel(systemState?.health.status)}
+              modeLabel={modeLabel(uiMode)}
+              pendingActionsCount={pendingActions.length}
+              scheduledTaskCount={enabledScheduledTaskCount}
+            />
+            {sidebarTab === 'status' && (
+              <AssistantStatusPanel
+                activeTask={activeConversationTask}
+                currentStepLabel={activeConversationTaskStep?.label ?? 'sin paso activo'}
+                effectiveLanguage={effectiveVoiceLanguage}
+                fallbackReason={providerRuntime?.fallbackReason}
+                fallbackUsed={providerRuntime?.fallbackUsed}
+                microphoneAccessible={voice?.microphoneAccessible ?? false}
+                onOpenPermissions={() => openSidebar('permissions')}
+                pendingActionsCount={pendingActions.length}
+                runtimeModelLabel={runtimeModelDisplay.label}
+                runtimeModelValue={runtimeModelDisplay.value}
+                runtimeProviderLabel={configuredProviderLabel}
+                sttLabel={providerLabel(voice?.settings.sttProviderId, 'sin provider')}
+                taskProgressLabel={taskProgressLabel(activeConversationTask)}
+                taskStatusLabel={taskStatusLabel(activeConversationTask?.status)}
+                ttsLabel={providerLabel(voice?.settings.ttsProviderId, 'sin provider')}
+                voiceActivityLabel={voiceActivityLabel(voice)}
+                voiceAvailabilityLabel={voiceAvailabilityLabel(voice)}
+                voiceDiagnostic={voice?.lastError ?? voiceDiagnosticSummary}
+                voiceModeEnabled={voiceModeEnabled}
+                voiceModeState={voiceSession?.voiceModeState}
+              />
+            )}
             {sidebarTab === 'history' && (
               <section className="stack">
                 <h2>Historial de acciones</h2>
@@ -1013,7 +1484,9 @@ export default function App() {
                     <strong>Proveedor en runtime</strong>
                     <span>{providerLabel(providerRuntime?.activeProviderId, 'sin uso')}</span>
                   </div>
-                  <p>Modelo actual: {providerRuntime?.activeModel ?? 'sin uso'}</p>
+                  <p>
+                    {runtimeModelDisplay.label}: {runtimeModelDisplay.value}
+                  </p>
                   <p className="small-copy">
                     Ollama: {providerRuntime?.ollamaAvailable ? 'disponible' : 'no disponible'}
                   </p>
@@ -1198,52 +1671,41 @@ export default function App() {
               <section className="stack">
                 <h2>Voz</h2>
                 <p className="panel-copy">
-                  Pulsa para hablar, revisa el estado real del microfono y decide si ASSEM debe leer las respuestas automaticamente.
+                  Los controles viven en el HUD principal. Aqui ves el runtime real, el transcript y el diagnostico.
                 </p>
-                <article className="card card--highlight voice-panel">
-                  <div
-                    className={`voice-stage${
-                      voiceSession?.recordingState === 'recording'
-                        ? ' voice-stage--recording'
-                        : voiceSession?.speakingState === 'speaking'
-                          ? ' voice-stage--speaking'
-                          : voiceSession?.lastError
-                            ? ' voice-stage--error'
-                            : ''
-                    }`}
-                    aria-hidden="true"
-                  >
-                    <span className="voice-ring voice-ring--outer" />
-                    <span className="voice-ring voice-ring--mid" />
-                    <span className="voice-ring voice-ring--inner" />
-                    <span className="voice-wave voice-wave--one" />
-                    <span className="voice-wave voice-wave--two" />
-                    <span className="voice-wave voice-wave--three" />
-                    <span className="voice-core">
-                      {voiceSession?.recordingState === 'recording'
-                        ? 'REC'
-                        : voiceSession?.speakingState === 'speaking'
-                          ? 'VOZ'
-                          : voiceSession?.lastError
-                            ? 'ERR'
-                            : 'ASSEM'}
-                    </span>
+                <article className="card card--highlight voice-overview">
+                  <div className="card__meta">
+                    <strong>Resumen de voz</strong>
+                    <span>{voiceAvailabilityLabel(voice)}</span>
                   </div>
-                  <div className="voice-copy">
-                    <strong>Estado de voz: {voiceAvailabilityLabel(voice)}</strong>
-                    <p>
-                      STT activo: {providerLabel(voice?.settings.sttProviderId, 'sin provider')} - TTS activo:{' '}
-                      {providerLabel(voice?.settings.ttsProviderId, 'sin provider')}
-                    </p>
-                    <p>
-                      Microfono: {voice?.microphoneAccessible ? 'accesible' : 'no accesible'} - idioma configurado:{' '}
-                      {voice?.settings.preferredLanguage ?? 'sin definir'} - idioma efectivo:{' '}
-                      {effectiveVoiceLanguage}
-                    </p>
-                    <p className="small-copy">
-                      STT legado de Windows: aislado y no activo en esta fase. El STT real de desktop va por whisper.cpp.
-                    </p>
+                  <VoiceOrb
+                    activityLabel={voiceActivityLabel(voice)}
+                    availabilityLabel={voiceAvailabilityLabel(voice)}
+                    diagnostic={voice?.lastError ?? voiceDiagnosticSummary}
+                    languageLabel={effectiveVoiceLanguage}
+                    microphoneLabel={voice?.microphoneAccessible ? 'Mic listo' : 'Mic sin acceso'}
+                    state={voiceOrbState}
+                    sttLabel={providerLabel(voice?.settings.sttProviderId, 'sin provider')}
+                    ttsLabel={providerLabel(voice?.settings.ttsProviderId, 'sin provider')}
+                    wakeWord={voice?.settings.wakeWord ?? 'prolijo'}
+                  />
+                  <div className="voice-overview__grid">
+                    <div className="subcard">
+                      <strong>{providerLabel(voice?.settings.sttProviderId, 'sin provider')}</strong>
+                      <p className="small-copy">STT activo</p>
+                    </div>
+                    <div className="subcard">
+                      <strong>{providerLabel(voice?.settings.ttsProviderId, 'sin provider')}</strong>
+                      <p className="small-copy">TTS activo</p>
+                    </div>
+                    <div className="subcard">
+                      <strong>{voice?.microphoneAccessible ? 'Microfono listo' : 'Microfono sin acceso'}</strong>
+                      <p className="small-copy">idioma {effectiveVoiceLanguage}</p>
+                    </div>
                   </div>
+                  <p className="small-copy">
+                    STT legado de Windows aislado. El flujo real de desktop usa whisper.cpp y reproduce con Windows System TTS.
+                  </p>
                 </article>
                 <article className="card card--compact">
                   <div className="card__meta">
@@ -1277,59 +1739,6 @@ export default function App() {
                 </article>
                 <article className="card card--compact">
                   <div className="card__meta">
-                    <strong>Controles</strong>
-                    <span>{voiceActivityLabel(voice)}</span>
-                  </div>
-                  <div className="voice-controls">
-                    <button
-                      className="primary"
-                      disabled={!canStartRecording}
-                      onClick={() => void startVoiceRecording()}
-                      type="button"
-                    >
-                      Iniciar grabacion
-                    </button>
-                    <button
-                      disabled={!canStopRecording}
-                      onClick={() => void stopVoiceRecording()}
-                      type="button"
-                    >
-                      Detener y enviar
-                    </button>
-                    <button
-                      disabled={voiceSession?.recordingState !== 'recording' || busy}
-                      onClick={() => void cancelVoiceRecording()}
-                      type="button"
-                    >
-                      Cancelar grabacion
-                    </button>
-                    <button
-                      disabled={!canPlayLatestReply}
-                      onClick={() => void speakLatestAssistantReply()}
-                      type="button"
-                    >
-                      Leer ultima respuesta
-                    </button>
-                    <button
-                      disabled={voiceSession?.speakingState !== 'speaking' || busy}
-                      onClick={() => void stopAssistantSpeech()}
-                      type="button"
-                    >
-                      Parar lectura
-                    </button>
-                  </div>
-                  <label className="field field--inline">
-                    <span>Autolectura de respuestas</span>
-                    <input
-                      checked={voice?.settings.autoReadResponses ?? false}
-                      disabled={busy}
-                      onChange={(event) => void toggleAutoReadResponses(event.target.checked)}
-                      type="checkbox"
-                    />
-                  </label>
-                </article>
-                <article className="card card--compact">
-                  <div className="card__meta">
                     <strong>Transcript reciente</strong>
                     <span>{voiceSession?.audioDurationMs ? `${voiceSession.audioDurationMs} ms` : 'sin audio'}</span>
                   </div>
@@ -1339,6 +1748,21 @@ export default function App() {
                   <p className="small-copy">
                     Audio: {formatVoiceAudioDiagnostics(latestVoiceAudio)}
                   </p>
+                </article>
+                <article className="card card--compact">
+                  <div className="card__meta">
+                    <strong>Wake word experimental</strong>
+                    <span>{voiceSession?.lastWakeWindowAt ? fmt(voiceSession.lastWakeWindowAt) : 'sin ventanas'}</span>
+                  </div>
+                  <p className="small-copy">
+                    No forma parte del flujo principal. Ultima ventana: {voiceSession?.lastWakeTranscript ?? 'sin transcript wake.'}
+                  </p>
+                  <p className="small-copy">
+                    Audio wake: {formatVoiceAudioDiagnostics(latestWakeVoiceAudio)}
+                  </p>
+                  {wakeVoiceDiagnosticSummary && (
+                    <p className="small-copy">Diagnostico wake: {wakeVoiceDiagnosticSummary}</p>
+                  )}
                 </article>
                 <article className="card card--compact">
                   <div className="card__meta">
@@ -1357,6 +1781,9 @@ export default function App() {
                   <p className="small-copy">
                     {voice?.lastError ?? 'Sin incidencias de microfono, transcripcion o sintesis en esta sesion.'}
                   </p>
+                  {voiceDiagnosticSummary && (
+                    <p className="small-copy">Resumen: {voiceDiagnosticSummary}</p>
+                  )}
                   {latestVoiceDiagnostic?.detail && (
                     <p className="small-copy">Detalle: {latestVoiceDiagnostic.detail}</p>
                   )}
@@ -1639,190 +2066,6 @@ export default function App() {
             )}
           </div>
         </aside>
-
-        <section className="chat">
-          <div className="chat__header">
-            <div>
-              <p className="eyebrow">Conversacion</p>
-              <h2>Chat principal</h2>
-            </div>
-            <p className="panel-copy">
-              La UI se mantiene ligera y el agente local controla la orquestacion, la persistencia, el routing y la politica.
-            </p>
-          </div>
-
-          {error && (
-            <div className="banner banner--error">
-              <strong>Error del agente local</strong>
-              <span>{error}</span>
-            </div>
-          )}
-
-          {voice?.lastError && (
-            <div className="banner banner--warning">
-              <strong>Estado de voz</strong>
-              <span>{voice.lastError}</span>
-            </div>
-          )}
-
-          <div className="chat__statusbar">
-            <span className="pill">Estado: {healthStatusLabel(systemState?.health.status)}</span>
-            <span className="pill">Modo: {modeLabel(uiMode)}</span>
-            <span className="pill">
-              Proveedor: {providerLabel(providerRuntime?.activeProviderId ?? providerRuntime?.configuredDefaultProviderId)}
-            </span>
-            <span className="pill">Modelo: {providerRuntime?.activeModel ?? 'pendiente'}</span>
-            {providerRuntime?.fallbackUsed && (
-              <span className="pill">Fallback activo</span>
-            )}
-            <span className="pill">
-              Tarea activa:{' '}
-              {activeConversationTask
-                ? taskStatusLabel(activeConversationTask.status)
-                : 'ninguna'}
-            </span>
-            {activeConversationTask && (
-              <>
-                <span className="pill">Fase: {activeConversationTask.currentPhase ?? 'sin fase'}</span>
-                <span className="pill">
-                  Progreso: {taskProgressLabel(activeConversationTask)}
-                </span>
-                <span className="pill">
-                  Paso: {activeConversationTaskStep?.label ?? 'sin paso'}
-                </span>
-                {activeConversationTaskArtifacts[0] && (
-                  <span className="pill">
-                    Ultimo artefacto: {activeConversationTaskArtifacts.at(-1)?.label}
-                  </span>
-                )}
-                {activeConversationTaskPlan && (
-                  <span className="pill">
-                    Plan: {activeConversationTaskPendingPlanSteps.length} paso(s) pendientes
-                  </span>
-                )}
-                {activeConversationTaskRefinements.length > 0 && (
-                  <span className="pill">
-                    Ajustes: {activeConversationTaskRefinements.length}
-                  </span>
-                )}
-              </>
-            )}
-            <span className="pill">Voz: {voiceAvailabilityLabel(voice)}</span>
-            <span className="pill">Mic: {voice?.microphoneAccessible ? 'accesible' : 'sin acceso'}</span>
-            <span className="pill">
-              Autolectura: {voice?.settings.autoReadResponses ? 'activa' : 'manual'}
-            </span>
-            {pendingActions.length > 0 && (
-              <button
-                className="pill pill--button"
-                onClick={() => setSidebarTab('permissions')}
-                type="button"
-              >
-                {pendingActions.length} confirmacion{pendingActions.length === 1 ? '' : 'es'} pendiente{pendingActions.length === 1 ? '' : 's'}
-              </button>
-            )}
-            <span className="pill">Perfil: {activeProfile?.name ?? 'ninguno'}</span>
-            <span className="pill">Tareas: {enabledScheduledTaskCount}</span>
-          </div>
-
-          <div
-            className={`chat__messages${hasMessages ? ' chat__messages--populated' : ''}`}
-          >
-            {messages.length === 0 ? (
-              <div className="empty-state">
-                <h3>Empieza con una tarea breve</h3>
-                <p>Pregunta por la hora, lista el sandbox o pide una accion local segura.</p>
-                <div className="prompt-grid">
-                  {prompts.map((prompt) => (
-                    <button key={prompt} disabled={isBusy || !currentSession} onClick={() => void sendMessage(prompt)} type="button">
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              messages.map((message) => (
-                <article className={`message message--${message.role}`} key={message.id}>
-                  <div className="message__meta">
-                    <strong>{message.role === 'user' ? 'Tu' : 'ASSEM'}</strong>
-                    <span>{fmt(message.createdAt)}</span>
-                  </div>
-                  <p>{message.content}</p>
-                </article>
-              ))
-            )}
-          </div>
-
-          <form
-            className="composer"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void sendMessage(composeValue);
-            }}
-          >
-            <div className="composer__voice">
-              <div className="composer__voice-status">
-                <span className="pill">Voz {voiceAvailabilityLabel(voice)}</span>
-                <span className="pill">{voiceActivityLabel(voice)}</span>
-              </div>
-              <div className="inline-actions">
-                <button
-                  className="primary"
-                  disabled={!canStartRecording}
-                  onClick={() => void startVoiceRecording()}
-                  type="button"
-                >
-                  Hablar
-                </button>
-                <button
-                  disabled={!canStopRecording}
-                  onClick={() => void stopVoiceRecording()}
-                  type="button"
-                >
-                  Detener y enviar
-                </button>
-                <button
-                  disabled={voiceSession?.recordingState !== 'recording' || busy}
-                  onClick={() => void cancelVoiceRecording()}
-                  type="button"
-                >
-                  Cancelar
-                </button>
-                <button
-                  disabled={!canPlayLatestReply}
-                  onClick={() => void speakLatestAssistantReply()}
-                  type="button"
-                >
-                  Leer ultima
-                </button>
-                <button
-                  disabled={voiceSession?.speakingState !== 'speaking' || busy}
-                  onClick={() => void stopAssistantSpeech()}
-                  type="button"
-                >
-                  Parar voz
-                </button>
-              </div>
-            </div>
-            <textarea
-              disabled={!currentSession || isBusy}
-              rows={4}
-              value={composeValue}
-              onChange={(event) => setComposeValue(event.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              placeholder='Escribe algo como "Lista el sandbox" o "Crea un archivo llamado agenda.txt"'
-            />
-            <div className="composer__footer">
-              <p className="small-copy">
-                Modo actual: <strong>{modeLabel(uiMode)}</strong> - autolectura{' '}
-                <strong>{voice?.settings.autoReadResponses ? 'activa' : 'manual'}</strong>
-              </p>
-              <button className="primary" disabled={!currentSession || isBusy || !composeValue.trim()} type="submit">
-                {isBusy ? 'Enviando...' : 'Enviar'}
-              </button>
-            </div>
-          </form>
-        </section>
       </main>
     </div>
   );

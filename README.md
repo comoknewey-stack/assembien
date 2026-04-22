@@ -7,7 +7,10 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
 - Local desktop chat connected to a local HTTP agent.
 - Native desktop shell wiring with Tauri, while keeping the local HTTP agent separate from the frontend.
 - First desktop voice flow:
-  - push-to-talk start/stop
+  - `Modo conversacion` toggle for continuous turn-taking without a wake word
+  - separate `Mute` control that cuts microphone capture even when conversation mode is enabled
+  - push-to-talk start/stop kept as a manual fallback/debug path
+  - active conversation turns close on sustained silence or max duration
   - local transcript routed into the current chat session
   - optional auto-read for assistant replies
   - manual speak/stop controls for the latest assistant response
@@ -44,7 +47,7 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
 - The calendar provider is still mock-only.
 - `demo-local` remains a deterministic fallback provider for local development and failure recovery.
 - Scheduler execution is intentionally limited to safe internal tasks. It does not perform aggressive system automation.
-- Voice is desktop-only in this phase and intentionally does not include wake word, full duplex or advanced interruption.
+- Voice is desktop-only in this phase. The main flow is conversation mode plus explicit mute and push-to-talk fallback; it still does not include full duplex, always-on listening while disabled, advanced barge-in or a native ultra-low-power wake engine.
 
 ## Repository Structure
 
@@ -91,16 +94,30 @@ Available variables:
 - `ASSEM_DATA_ROOT=./.assem-data`
 - `ASSEM_DEFAULT_PROVIDER=ollama`
 - `ASSEM_OLLAMA_BASE_URL=http://127.0.0.1:11434`
-- `ASSEM_OLLAMA_MODEL=llama3.2`
+- `ASSEM_OLLAMA_MODEL=llama3.2:latest`
 - `ASSEM_PROVIDER_TIMEOUT_MS=15000`
 - `ASSEM_VOICE_STT_PROVIDER=whisper-cpp`
 - `ASSEM_VOICE_TTS_PROVIDER=windows-system-tts`
 - `ASSEM_VOICE_LANGUAGE=es-ES`
 - `ASSEM_VOICE_AUTO_READ_RESPONSES=false`
 - `ASSEM_VOICE_DEBUG=false`
+- `ASSEM_VOICE_MODE_ENABLED_BY_DEFAULT=false`
+- `ASSEM_WAKE_WORD_ENABLED=false`
+- `ASSEM_WAKE_WORD=prolijo`
+- `ASSEM_WAKE_WORD_ALIASES=pro lijo,polijo,prolijos,pro li jo`
+- `ASSEM_WAKE_WINDOW_MS=2500`
+- `ASSEM_WAKE_INTERVAL_MS=500`
+- `ASSEM_ACTIVE_SILENCE_MS=2000`
+- `ASSEM_ACTIVE_MAX_MS=30000`
+- `ASSEM_ACTIVE_MIN_SPEECH_MS=800`
+- `ASSEM_ACTIVE_PREROLL_MS=700`
+- `ASSEM_ACTIVE_POSTROLL_MS=500`
+- `ASSEM_WAKE_DEBUG=false`
 - `ASSEM_WHISPER_CPP_CLI_PATH=`
 - `ASSEM_WHISPER_CPP_MODEL_PATH=`
 - `ASSEM_WHISPER_CPP_THREADS=4`
+- `ASSEM_WHISPER_CPP_BEAM_SIZE=5`
+- `ASSEM_WHISPER_CPP_INITIAL_PROMPT=ASSEM. Comandos frecuentes en espanol: que hora es, hora actual, fecha actual, crear archivo, crear carpeta, lista el sandbox, lee el archivo, confirma, cancela, Ollama, whisper.cpp.`
 - `ASSEM_ALLOWED_ORIGINS=http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost`
 
 ## Voice Setup
@@ -115,9 +132,18 @@ This voice phase is local-first and desktop-only:
 
 - microphone capture happens in the desktop UI and the local agent keeps the session orchestration
 - STT runs locally through `whisper.cpp`
+- `Modo conversacion` is explicit: when it is off, the desktop UI stops microphone capture
+- when `Modo conversacion` is on and the microphone is not muted, the UI waits for speech, captures one complete turn, closes it after sustained silence or max duration, transcribes it and sends the transcript through the normal chat/orchestrator path
+- `Mute` is a separate privacy control: when it is active, the microphone is not captured even if conversation mode remains enabled
+- push-to-talk remains available as a manual fallback/debug path
+- the active conversation listening state is not restored on startup; ASSEM always launches with conversation mode off until the user enables it again
+- captured microphone audio is lightly normalized before WAV encoding when it is usable but too quiet
+- Whisper runs with an initial ASSEM command prompt and configurable beam search to improve Spanish command recognition
 - transcripts are inserted into the current chat session
 - assistant replies can be read aloud automatically or manually
 - text chat keeps working normally even if voice is unavailable
+
+Wake word code is now isolated as experimental/legacy and disabled by default with `ASSEM_WAKE_WORD_ENABLED=false`. The main voice experience no longer requires saying `Prolijo`; future wake-word work should use a dedicated local detector rather than Whisper windows as the primary UX.
 
 Current local runtime layout used by this setup:
 
@@ -172,12 +198,28 @@ ASSEM_VOICE_TTS_PROVIDER=windows-system-tts
 ASSEM_VOICE_LANGUAGE=es-ES
 ASSEM_VOICE_AUTO_READ_RESPONSES=false
 ASSEM_VOICE_DEBUG=false
+ASSEM_VOICE_MODE_ENABLED_BY_DEFAULT=false
+ASSEM_WAKE_WORD_ENABLED=false
+ASSEM_WAKE_WORD=prolijo
+ASSEM_WAKE_WORD_ALIASES=pro lijo,polijo,prolijos,pro li jo
+ASSEM_WAKE_WINDOW_MS=2500
+ASSEM_WAKE_INTERVAL_MS=500
+ASSEM_ACTIVE_SILENCE_MS=2000
+ASSEM_ACTIVE_MAX_MS=30000
+ASSEM_ACTIVE_MIN_SPEECH_MS=800
+ASSEM_ACTIVE_PREROLL_MS=700
+ASSEM_ACTIVE_POSTROLL_MS=500
+ASSEM_WAKE_DEBUG=false
 ASSEM_WHISPER_CPP_CLI_PATH=
 ASSEM_WHISPER_CPP_MODEL_PATH=
 ASSEM_WHISPER_CPP_THREADS=4
+ASSEM_WHISPER_CPP_BEAM_SIZE=5
+ASSEM_WHISPER_CPP_INITIAL_PROMPT=ASSEM. Comandos frecuentes en espanol: que hora es, hora actual, fecha actual, crear archivo, crear carpeta, lista el sandbox, lee el archivo, confirma, cancela, Ollama, whisper.cpp.
 ```
 
 Leave those two Whisper paths empty if you want ASSEM to use the standard `.assem-runtime/whispercpp` layout automatically.
+
+For better recognition quality, keep `ASSEM_VOICE_LANGUAGE=es-ES`, speak for at least one full second, keep the microphone close, and prefer a stronger Whisper model by setting `ASSEM_WHISPER_CPP_MODEL_PATH` to an installed `ggml-small.bin` or better model. Larger models are not committed to the repo and should stay inside `.assem-runtime` or another local-only path.
 
 If you need to debug a failed transcription end to end, set:
 
@@ -203,11 +245,16 @@ npm run dev:desktop:app
   - open `Voz`
   - confirm that voice shows `lista` or `parcial`
   - confirm that the STT provider is `whisper.cpp`
+  - enable `Modo conversacion` to let ASSEM listen for complete spoken turns without a wake word
+  - use `Mute micro` whenever you want the microphone fully off
+  - speak one complete phrase and pause so silence detection can close the turn
+  - confirm that the transcript appears as a normal user message in the current session
   - click `Hablar`
   - speak
   - click `Detener y enviar`
-  - confirm that the transcript appears as a normal user message in the current session
+  - use push-to-talk as the manual fallback/debug path
   - click `Leer ultima` or enable `Autolectura de respuestas`
+  - wake word is experimental/legacy and only runs if explicitly enabled with `ASSEM_WAKE_WORD_ENABLED=true`
 
 If voice is partially available:
 
@@ -233,7 +280,7 @@ Basic local setup:
 3. Pull a test model:
 
 ```bash
-ollama pull llama3.2
+ollama pull llama3.2:latest
 ```
 
 4. Create the local env file and keep it aligned with the Ollama endpoint and model:
@@ -245,7 +292,7 @@ cp .env.example .env
 ```bash
 ASSEM_DEFAULT_PROVIDER=ollama
 ASSEM_OLLAMA_BASE_URL=http://127.0.0.1:11434
-ASSEM_OLLAMA_MODEL=llama3.2
+ASSEM_OLLAMA_MODEL=llama3.2:latest
 ```
 
 5. Start ASSEM with `npm run dev`.
@@ -255,7 +302,7 @@ How to confirm ASSEM is using Ollama:
 - In the desktop System panel:
   - `Configured provider` should be `ollama`
   - `Runtime provider` should switch to `ollama` after a model-routed chat turn
-  - `Current model` should show the resolved Ollama model
+  - the model badges should show either the active model for the last routed turn or the resolved configured model when the session has not used Ollama yet
 - In telemetry:
   - recent entries should show `providerId: ollama`
   - fallback fields stay empty when Ollama handled the turn directly
@@ -367,13 +414,15 @@ ASSEM persists local state under `ASSEM_DATA_ROOT`:
 - `profiles.json`: profile memory packs and active profile pointer.
 - `scheduler.json`: scheduled tasks and last run metadata.
 - `telemetry.jsonl`: per-interaction telemetry records.
-- `voice-settings.json`: persisted voice provider and auto-read settings.
+- `voice-settings.json`: persisted voice provider, language, auto-read and mute settings. Active conversation listening is never restored on startup. Wake word and VAD thresholds are owned by `.env`/runtime config, not by this file.
 - `voice-temp/`: transient files created during Whisper transcription and removed after successful processing.
 - `*.tmp` sibling files next to JSON stores: stale persistence leftovers that ASSEM now cleans when they are old enough.
 
 The persistence layer is abstracted behind file-backed helpers so the storage backend can later be swapped for SQLite without changing the higher-level interfaces.
 
 In the current local dev workflow, `ASSEM_DATA_ROOT=./.assem-data` is resolved from the local-agent workspace, so these files end up under `apps/local-agent/.assem-data/`.
+
+In that same workflow, `ASSEM_SANDBOX_ROOT=./sandbox` is also resolved from the local-agent workspace, so sandbox files end up under `apps/local-agent/sandbox/` unless you override the path explicitly.
 
 ## Policy and Confirmations
 
@@ -496,7 +545,7 @@ Current scope:
 
 What it does not do yet:
 
-- planner-generated execution plans
+- generic task graphs beyond the persisted plan created by Planner v1
 - multiple runtime task types
 - browser or desktop automation
 - autonomous sub-agents
@@ -573,6 +622,12 @@ Main routes:
 - `POST /api/pending-action`
 - `GET /api/voice`
 - `POST /api/voice/settings`
+- `POST /api/voice/mode`
+- `POST /api/voice/wake-window`
+- `POST /api/voice/active-listening/start`
+- `POST /api/voice/active-listening/state`
+- `POST /api/voice/active-listening/stop`
+- `POST /api/voice/active-listening/cancel`
 - `POST /api/voice/recording/start`
 - `POST /api/voice/recording/stop`
 - `POST /api/voice/recording/cancel`
@@ -647,6 +702,8 @@ Detailed Ollama instructions are documented in [docs/ollama-local-setup.md](docs
 - Voice in this phase still runs through the local agent. STT uses `whisper.cpp` and TTS uses Windows system speech; it does not add a second native business-logic layer inside Tauri.
 - The old Windows STT implementation remains isolated as legacy code and is not part of the active runtime path anymore.
 - The frontend captures microphone audio, converts it to WAV PCM and sends it to the local agent; the agent then invokes `whisper-cli.exe` with the configured local model.
+- Conversation mode is explicit and controlled by the UI toggle. When disabled, the frontend stops microphone capture. When enabled and not muted, the frontend captures full spoken turns using local VAD/silence detection and the agent owns the runtime/session state. The active listening toggle itself is not persisted and never auto-starts on a new launch.
+- Wake word remains experimental/legacy and disabled by default; it is not the main voice flow.
 - Whisper now performs a cheap real self-check with a generated WAV probe before reporting itself ready.
 - The agent cleans stale `voice-temp/session-*` directories on startup and cleans old `sessions.json.*.tmp`-style leftovers in the JSON persistence layer.
 - The local third-party voice runtime folder `.assem-runtime/` is intentionally ignored from Git because it contains downloaded binaries and models, not ASSEM source code.
@@ -663,7 +720,7 @@ Detailed Ollama instructions are documented in [docs/ollama-local-setup.md](docs
 - The native shell is wired into the repo and can be launched with Tauri once the machine has the Rust/Tauri prerequisites installed.
 - The agent remains a separate Node-based local process; this phase does not yet bundle a standalone agent runtime into the native app.
 - Voice is Windows-only in this phase because TTS still depends on Windows system speech and the desktop build currently targets Windows first.
-- Voice is push-to-talk only: no wake word, no full duplex and no advanced barge-in.
+- Voice supports conversation mode, explicit mute and push-to-talk fallback. It is not full duplex, does not support advanced barge-in, and wake-word detection is experimental/legacy rather than a native low-power detector.
 - Audio is not persisted; only transcript/state/telemetry metadata are stored locally.
 - `npm run build:desktop` currently targets the native shell build itself. Installer packaging, signing and branded icons are intentionally deferred.
 - The current machine still needs Rust tooling before `tauri dev` or `tauri build` can be validated end-to-end.

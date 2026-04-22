@@ -38,6 +38,22 @@ export type VoiceRecordingState = 'idle' | 'recording' | 'transcribing' | 'error
 
 export type VoiceSpeakingState = 'idle' | 'speaking' | 'error';
 
+export type VoiceModeState =
+  | 'off'
+  | 'muted'
+  | 'idle'
+  | 'conversation_waiting'
+  | 'wake_listening'
+  | 'wake_detected'
+  | 'active_listening'
+  | 'speech_detected'
+  | 'silence_wait'
+  | 'closing_turn'
+  | 'transcribing'
+  | 'processing'
+  | 'speaking'
+  | 'error';
+
 export type VoiceTranscriptionDiagnosticCode =
   | 'audio_payload_missing'
   | 'audio_decode_failed'
@@ -89,6 +105,27 @@ export type TaskTelemetryEventType =
   | 'task_interrupt_refinement'
   | 'task_interrupt_clarification'
   | 'task_interrupt_independent_query';
+
+export type VoiceTelemetryEventType =
+  | 'voice_mode_enabled'
+  | 'voice_mode_disabled'
+  | 'conversation_mode_enabled'
+  | 'conversation_mode_disabled'
+  | 'conversation_waiting_started'
+  | 'conversation_turn_started'
+  | 'conversation_turn_closed'
+  | 'voice_mute_enabled'
+  | 'voice_mute_disabled'
+  | 'wake_listening_started'
+  | 'wake_word_detected'
+  | 'wake_window_transcribed'
+  | 'active_listening_started'
+  | 'active_speech_detected'
+  | 'active_silence_detected'
+  | 'active_transcription_started'
+  | 'active_transcription_completed'
+  | 'active_transcription_failed'
+  | 'voice_mode_error';
 
 export type PendingActionStatus =
   | 'pending'
@@ -537,7 +574,7 @@ export interface TelemetryRecord {
   fallbackReason?: string;
   audioDurationMs?: number;
   textLength?: number;
-  eventType?: TaskTelemetryEventType;
+  eventType?: TaskTelemetryEventType | VoiceTelemetryEventType;
   taskId?: string;
   taskStatus?: TaskStatus;
 }
@@ -1205,6 +1242,19 @@ export interface VoiceSettings {
   ttsProviderId: string;
   preferredLanguage: string;
   autoReadResponses: boolean;
+  voiceModeEnabled: boolean;
+  micMuted: boolean;
+  wakeWordEnabled: boolean;
+  wakeWord: string;
+  wakeWordAliases: string[];
+  wakeWindowMs: number;
+  wakeIntervalMs: number;
+  activeSilenceMs: number;
+  activeMaxMs: number;
+  activeMinSpeechMs: number;
+  activePrerollMs: number;
+  activePostrollMs: number;
+  wakeDebug: boolean;
 }
 
 export interface VoiceProviderHealth {
@@ -1232,6 +1282,7 @@ export interface VoiceAudioDiagnostics {
   approximateDurationMs?: number;
   peakLevel?: number;
   rmsLevel?: number;
+  gainApplied?: number;
   wavValid?: boolean;
   silenceDetected?: boolean;
   suspicious?: boolean;
@@ -1319,18 +1370,28 @@ export interface VoiceSessionState {
   sessionId: string | null;
   recordingState: VoiceRecordingState;
   speakingState: VoiceSpeakingState;
+  voiceModeState: VoiceModeState;
+  wakeModeEnabled: boolean;
+  micMuted: boolean;
   microphoneAccessible: boolean;
   sttProviderId?: string;
   ttsProviderId?: string;
   autoReadResponses: boolean;
   preferredLanguage: string;
   lastTranscript?: string;
+  lastWakeTranscript?: string;
   lastAssistantMessage?: string;
   lastError?: string;
   lastDiagnostic?: VoiceTranscriptionDiagnostic;
   lastAudioDiagnostics?: VoiceAudioDiagnostics;
   lastTranscriptionLanguage?: string;
+  lastWakeDiagnostic?: VoiceTranscriptionDiagnostic;
+  lastWakeAudioDiagnostics?: VoiceAudioDiagnostics;
+  lastWakeTranscriptionLanguage?: string;
   recordingStartedAt?: string;
+  activeListeningStartedAt?: string;
+  lastWakeWindowAt?: string;
+  lastWakeDetectedAt?: string;
   audioDurationMs?: number;
   updatedAt: string;
 }
@@ -1375,6 +1436,44 @@ export interface VoiceRecordingResponse {
   snapshot?: SessionSnapshot;
 }
 
+export interface VoiceModeUpdateRequest {
+  sessionId: string;
+  enabled: boolean;
+}
+
+export interface VoiceWakeWindowRequest {
+  sessionId: string;
+  audio?: SpeechToTextAudioInput;
+}
+
+export interface VoiceWakeWindowResponse {
+  voice: VoiceSystemState;
+  wakeDetected: boolean;
+  transcript?: string;
+}
+
+export interface VoiceActiveListeningStartRequest {
+  sessionId: string;
+}
+
+export interface VoiceActiveListeningStateRequest {
+  sessionId: string;
+  state: VoiceModeState;
+  audioDurationMs?: number;
+}
+
+export interface VoiceActiveListeningStopRequest {
+  sessionId: string;
+  audio?: SpeechToTextAudioInput;
+  reason?: 'silence' | 'max_duration' | 'manual' | 'no_speech';
+}
+
+export interface VoiceActiveListeningResponse {
+  voice: VoiceSystemState;
+  transcript?: string;
+  snapshot?: SessionSnapshot;
+}
+
 export interface VoiceSpeakRequest {
   sessionId: string;
   text?: string;
@@ -1398,8 +1497,22 @@ export interface AssemConfig {
   voiceLanguage: string;
   voiceAutoReadResponses: boolean;
   voiceDebugArtifacts: boolean;
+  voiceModeEnabledByDefault: boolean;
+  wakeWordEnabled: boolean;
+  wakeWord: string;
+  wakeWordAliases: string[];
+  wakeWindowMs: number;
+  wakeIntervalMs: number;
+  activeSilenceMs: number;
+  activeMaxMs: number;
+  activeMinSpeechMs: number;
+  activePrerollMs: number;
+  activePostrollMs: number;
+  wakeDebug: boolean;
   whisperCppCliPath?: string;
   whisperCppModelPath?: string;
   whisperCppThreads: number;
+  whisperCppInitialPrompt?: string;
+  whisperCppBeamSize?: number;
   allowedOrigins: string[];
 }

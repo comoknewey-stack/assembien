@@ -15,12 +15,27 @@ async function main(): Promise<void> {
     sttProviderId: config.voiceSttProviderId,
     ttsProviderId: config.voiceTtsProviderId,
     preferredLanguage: config.voiceLanguage,
-    autoReadResponses: config.voiceAutoReadResponses
+    autoReadResponses: config.voiceAutoReadResponses,
+    voiceModeEnabled: config.voiceModeEnabledByDefault,
+    micMuted: false,
+    wakeWordEnabled: config.wakeWordEnabled,
+    wakeWord: config.wakeWord,
+    wakeWordAliases: config.wakeWordAliases,
+    wakeWindowMs: config.wakeWindowMs,
+    wakeIntervalMs: config.wakeIntervalMs,
+    activeSilenceMs: config.activeSilenceMs,
+    activeMaxMs: config.activeMaxMs,
+    activeMinSpeechMs: config.activeMinSpeechMs,
+    activePrerollMs: config.activePrerollMs,
+    activePostrollMs: config.activePostrollMs,
+    wakeDebug: config.wakeDebug
   };
   const sttProvider = new WhisperCppSpeechToTextProvider({
     cliPath: config.whisperCppCliPath,
     modelPath: config.whisperCppModelPath,
     threads: config.whisperCppThreads,
+    initialPrompt: config.whisperCppInitialPrompt,
+    beamSize: config.whisperCppBeamSize,
     tempRoot: path.join(config.dataRoot, 'voice-temp')
   });
   const ttsProvider = new WindowsTextToSpeechProvider();
@@ -39,7 +54,14 @@ async function main(): Promise<void> {
   console.log(`Idioma: ${settings.preferredLanguage}`);
   console.log(`CLI Whisper: ${config.whisperCppCliPath ?? 'sin ruta'}`);
   console.log(`Modelo Whisper: ${config.whisperCppModelPath ?? 'sin ruta'}`);
+  console.log(`Threads Whisper: ${config.whisperCppThreads}`);
+  console.log(`Beam size Whisper: ${config.whisperCppBeamSize ?? 'por defecto'}`);
+  console.log(
+    `Prompt inicial Whisper: ${config.whisperCppInitialPrompt ? 'activo' : 'sin prompt'}`
+  );
   console.log(`Temp voice root: ${path.join(config.dataRoot, 'voice-temp')}`);
+  console.log(`Modo conversacion por defecto: ${settings.voiceModeEnabled ? 'activo' : 'apagado'}`);
+  console.log(`Wake word experimental: ${settings.wakeWordEnabled ? settings.wakeWord : 'desactivada'}`);
   console.log(`STT legado de Windows: aislado / no activo en runtime`);
   console.log(`Estado STT: ${sttHealth.status} / ${sttHealth.available ? 'listo' : 'no listo'}`);
   if (sttHealth.error) {

@@ -26,6 +26,7 @@ apps/local-agent/.assem-data/
 .assem-runtime/
 **/.assem-runtime/
 assem-runtime/
+.assem-runtime-bootstrap-*/
 **/voice-temp/
 
 # Local third-party voice/runtime payloads if they appear outside the main runtime folder

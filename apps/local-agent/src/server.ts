@@ -50,10 +50,15 @@ import type {
   TasksResponse,
   TelemetryRecord,
   TelemetrySink,
+  VoiceActiveListeningStartRequest,
+  VoiceActiveListeningStateRequest,
+  VoiceActiveListeningStopRequest,
+  VoiceModeUpdateRequest,
   VoiceRecordingRequest,
   VoiceRecordingStopRequest,
   VoiceSettingsUpdateRequest,
-  VoiceSpeakRequest
+  VoiceSpeakRequest,
+  VoiceWakeWindowRequest
 } from '@assem/shared-types';
 import { FileTaskManager } from '@assem/task-manager';
 import { TaskRuntimeExecutor } from '@assem/task-runtime';
@@ -540,6 +545,8 @@ async function main() {
         cliPath: config.whisperCppCliPath,
         modelPath: config.whisperCppModelPath,
         threads: config.whisperCppThreads,
+        initialPrompt: config.whisperCppInitialPrompt,
+        beamSize: config.whisperCppBeamSize,
         tempRoot: path.join(config.dataRoot, 'voice-temp'),
         debugArtifacts: config.voiceDebugArtifacts
       })
@@ -723,6 +730,42 @@ async function main() {
           200,
           await voiceController.updateSettings(body, url.searchParams.get('sessionId'))
         );
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/voice/mode') {
+        const body = await readJson<VoiceModeUpdateRequest>(request);
+        writeJson(request, response, 200, await voiceController.updateVoiceMode(body));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/voice/wake-window') {
+        const body = await readJson<VoiceWakeWindowRequest>(request);
+        writeJson(request, response, 200, await voiceController.submitWakeWindow(body));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/voice/active-listening/start') {
+        const body = await readJson<VoiceActiveListeningStartRequest>(request);
+        writeJson(request, response, 200, await voiceController.startActiveListening(body));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/voice/active-listening/state') {
+        const body = await readJson<VoiceActiveListeningStateRequest>(request);
+        writeJson(request, response, 200, await voiceController.updateActiveListeningState(body));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/voice/active-listening/stop') {
+        const body = await readJson<VoiceActiveListeningStopRequest>(request);
+        writeJson(request, response, 200, await voiceController.stopActiveListening(body));
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/voice/active-listening/cancel') {
+        const body = await readJson<VoiceRecordingRequest>(request);
+        writeJson(request, response, 200, await voiceController.cancelActiveListening(body));
         return;
       }
 

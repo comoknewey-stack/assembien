@@ -34,6 +34,11 @@ import type {
   TaskResponse,
   TasksResponse,
   LocalFileInput,
+  VoiceActiveListeningResponse,
+  VoiceActiveListeningStartRequest,
+  VoiceActiveListeningStateRequest,
+  VoiceActiveListeningStopRequest,
+  VoiceModeUpdateRequest,
   VoiceRecordingRequest,
   VoiceRecordingStopRequest,
   VoiceRecordingResponse,
@@ -41,7 +46,9 @@ import type {
   VoiceSettingsUpdateRequest,
   VoiceSpeakRequest,
   VoiceSpeakResponse,
-  VoiceStateResponse
+  VoiceStateResponse,
+  VoiceWakeWindowRequest,
+  VoiceWakeWindowResponse
 } from '@assem/shared-types';
 
 export interface AssemEventHandlers {
@@ -92,6 +99,60 @@ export class AssemClient {
   ): Promise<VoiceSettingsResponse> {
     const suffix = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
     return this.request<VoiceSettingsResponse>(`/api/voice/settings${suffix}`, {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async updateVoiceMode(
+    request: VoiceModeUpdateRequest
+  ): Promise<VoiceStateResponse> {
+    return this.request<VoiceStateResponse>('/api/voice/mode', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async submitVoiceWakeWindow(
+    request: VoiceWakeWindowRequest
+  ): Promise<VoiceWakeWindowResponse> {
+    return this.request<VoiceWakeWindowResponse>('/api/voice/wake-window', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async startVoiceActiveListening(
+    request: VoiceActiveListeningStartRequest
+  ): Promise<VoiceStateResponse> {
+    return this.request<VoiceStateResponse>('/api/voice/active-listening/start', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async updateVoiceActiveListeningState(
+    request: VoiceActiveListeningStateRequest
+  ): Promise<VoiceStateResponse> {
+    return this.request<VoiceStateResponse>('/api/voice/active-listening/state', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async stopVoiceActiveListening(
+    request: VoiceActiveListeningStopRequest
+  ): Promise<VoiceActiveListeningResponse> {
+    return this.request<VoiceActiveListeningResponse>('/api/voice/active-listening/stop', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+  }
+
+  async cancelVoiceActiveListening(
+    request: VoiceRecordingRequest
+  ): Promise<VoiceStateResponse> {
+    return this.request<VoiceStateResponse>('/api/voice/active-listening/cancel', {
       method: 'POST',
       body: JSON.stringify(request)
     });
