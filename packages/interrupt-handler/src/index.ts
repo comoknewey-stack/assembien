@@ -102,6 +102,14 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
     }
 
     if (
+      /^(?:como va|como va la tarea|como va el informe|que tal va|que tal va la tarea|estado de la tarea|estado del informe|how is it going|how is the task going)$/.test(
+        normalized
+      )
+    ) {
+      return 'status';
+    }
+
+    if (
       /^(?:cuanto te queda|cuanto queda|cuanto falta|que te falta|how much is left|whats left|what is left)$/.test(
         normalized
       )
@@ -122,11 +130,43 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
     }
 
     if (
-      /^(?:ya terminaste|ya has terminado|has terminado|are you done|did you finish)$/.test(
+      /^(?:ya esta|ya esta listo|esta listo|ya terminaste|ya has terminado|has terminado|ha terminado|termino|are you done|is it ready|did you finish)$/.test(
         normalized
       )
     ) {
       return 'completion';
+    }
+
+    if (
+      /^(?:donde esta el informe|donde esta el reporte|donde quedo el informe|donde guardaste el informe|donde se guardo el informe|ruta del informe|donde esta report md|where is the report|where did you save the report)$/.test(
+        normalized
+      )
+    ) {
+      return 'report_location';
+    }
+
+    if (
+      /^(?:donde esta la carpeta|donde esta el workspace|donde esta la carpeta de trabajo|ruta de la carpeta|ruta del workspace|workspace|where is the workspace|where is the work folder)$/.test(
+        normalized
+      )
+    ) {
+      return 'workspace_location';
+    }
+
+    if (
+      /^(?:que artefactos se han generado|que artefactos generaste|que archivos has generado|que archivos generaste|artefactos generados|what artifacts were generated|what files did you generate)$/.test(
+        normalized
+      )
+    ) {
+      return 'artifacts';
+    }
+
+    if (
+      /^(?:por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|why did it fail|what happened|what was the error)$/.test(
+        normalized
+      )
+    ) {
+      return 'failure';
     }
 
     if (
@@ -135,6 +175,78 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
       )
     ) {
       return 'plan';
+    }
+
+    if (
+      /^(?:que fuentes has encontrado|que fuentes encontraste|que fuentes estas usando|cuantas fuentes tienes|fuentes encontradas|what sources have you found|what sources are you using|how many sources do you have)$/.test(
+        normalized
+      )
+    ) {
+      return 'sources';
+    }
+
+    if (
+      /^(?:que fuentes has leido de verdad|que paginas has podido leer|que paginas leiste|fuentes leidas|paginas leidas|what sources did you actually read|what pages could you read|what pages did you read)$/.test(
+        normalized
+      )
+    ) {
+      return 'read_sources';
+    }
+
+    if (
+      /^(?:que fuentes tienen evidencia fuerte|que fuentes son fuertes|cuales son las fuentes fuertes|what sources have strong evidence|which sources are strong)$/.test(
+        normalized
+      )
+    ) {
+      return 'strong_sources';
+    }
+
+    if (
+      /^(?:que fuentes son debiles o tangenciales|que fuentes son debiles|que fuentes son tangenciales|what sources are weak or tangential|which sources are weak or tangential)$/.test(
+        normalized
+      )
+    ) {
+      return 'weak_sources';
+    }
+
+    if (
+      /^(?:cual es la mejor fuente que encontraste|cual es la mejor fuente|what is the best source you found|which is the best source)$/.test(
+        normalized
+      )
+    ) {
+      return 'best_source';
+    }
+
+    if (
+      /^(?:que fuentes usaste solo como snippet|fuentes solo snippet|que fuentes son solo snippet|what sources are snippet only|which sources are snippet only)$/.test(
+        normalized
+      )
+    ) {
+      return 'snippet_sources';
+    }
+
+    if (
+      /^(?:que fuentes descartaste|por que descartaste esa fuente|fuentes descartadas|what sources did you discard|why did you discard that source|discarded sources)$/.test(
+        normalized
+      )
+    ) {
+      return 'discarded_sources';
+    }
+
+    if (
+      /^(?:que evidencia tienes|que evidencia has extraido|evidencia disponible|what evidence do you have|what evidence did you extract)$/.test(
+        normalized
+      )
+    ) {
+      return 'evidence';
+    }
+
+    if (
+      /^(?:que limitaciones tiene este informe|que limitaciones tiene la investigacion|cuales son las limitaciones|what limitations does this report have|what are the limitations)$/.test(
+        normalized
+      )
+    ) {
+      return 'report_limitations';
     }
 
     return null;
@@ -224,6 +336,48 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
         instruction: normalized,
         label: 'Anadir tabla',
         value: 'table'
+      };
+    }
+
+    if (
+      /^(?:usa fuentes oficiales|prioriza fuentes oficiales|utiliza fuentes oficiales|use official sources|prefer official sources)$/.test(
+        normalized
+      )
+    ) {
+      return {
+        category: 'source',
+        type: 'source_preference',
+        instruction: normalized,
+        label: 'Priorizar fuentes oficiales',
+        value: 'official'
+      };
+    }
+
+    if (
+      /^(?:no uses blogs|sin blogs|descarta blogs|exclude blogs|do not use blogs)$/.test(
+        normalized
+      )
+    ) {
+      return {
+        category: 'source',
+        type: 'source_exclusion',
+        instruction: normalized,
+        label: 'Excluir blogs',
+        value: 'blogs'
+      };
+    }
+
+    if (
+      /^(?:prioriza fuentes recientes|usa fuentes recientes|prefer recent sources|use recent sources)$/.test(
+        normalized
+      )
+    ) {
+      return {
+        category: 'source',
+        type: 'recency',
+        instruction: normalized,
+        label: 'Priorizar fuentes recientes',
+        value: 'recent'
       };
     }
 

@@ -53,6 +53,20 @@ function createConfig(overrides: Partial<AssemConfig> = {}): AssemConfig {
     whisperCppCliPath: undefined,
     whisperCppModelPath: undefined,
     whisperCppThreads: 4,
+    whisperCppInitialPrompt: undefined,
+    whisperCppBeamSize: undefined,
+    webSearchProvider: '',
+    webSearchApiKey: undefined,
+    webSearchEndpoint: 'https://api.search.brave.com/res/v1/web/search',
+    webSearchMaxResults: 5,
+    webSearchTimeoutMs: 10_000,
+    webPageFetchEnabled: true,
+    webPageFetchTimeoutMs: 12_000,
+    webPageMaxSources: 3,
+    webPageMaxContentChars: 20_000,
+    webPageMinTextChars: 220,
+    webPageMinTextDensity: 0.18,
+    webPageMaxLinkDensity: 0.55,
     allowedOrigins: [],
     ...overrides
   };
@@ -717,6 +731,43 @@ describe('VoiceCoordinator', () => {
 
     expect(response.voice.session?.voiceModeState).toBe('active_listening');
     expect(response.voice.session?.wakeModeEnabled).toBe(false);
+  });
+
+  it('clears transient active-listening state when conversation mode is toggled off and on again', async () => {
+    const harness = await createCoordinator({});
+    cleanups.push(harness.cleanup);
+
+    await harness.coordinator.updateVoiceMode({
+      sessionId: 'session-conversation-restart',
+      enabled: true
+    });
+    await harness.coordinator.startActiveListening({
+      sessionId: 'session-conversation-restart'
+    });
+
+    const disabled = await harness.coordinator.updateVoiceMode({
+      sessionId: 'session-conversation-restart',
+      enabled: false
+    });
+
+    expect(disabled.voice.session?.voiceModeState).toBe('off');
+    expect(disabled.voice.session?.recordingState).toBe('idle');
+    expect(disabled.voice.session?.activeListeningStartedAt).toBeUndefined();
+
+    const enabledAgain = await harness.coordinator.updateVoiceMode({
+      sessionId: 'session-conversation-restart',
+      enabled: true
+    });
+
+    expect(enabledAgain.voice.session?.voiceModeState).toBe('conversation_waiting');
+    expect(enabledAgain.voice.session?.recordingState).toBe('idle');
+
+    const restarted = await harness.coordinator.startActiveListening({
+      sessionId: 'session-conversation-restart'
+    });
+
+    expect(restarted.voice.session?.voiceModeState).toBe('active_listening');
+    expect(restarted.voice.session?.recordingState).toBe('recording');
   });
 
   it('uses mic mute as a hard stop for conversation capture', async () => {

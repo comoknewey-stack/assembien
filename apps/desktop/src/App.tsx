@@ -6,6 +6,7 @@ import type {
   AssemTask,
   ProfileImportPayload,
   ProfileMemory,
+  PendingAction,
   ScheduledTask,
   SpeechToTextAudioInput,
   SessionSnapshot,
@@ -160,6 +161,12 @@ function taskStatusLabel(status?: AssemTask['status']): string {
   }
 }
 
+function isVisiblePendingAction(
+  action: PendingAction | null | undefined
+): action is PendingAction {
+  return action?.status === 'pending';
+}
+
 function taskProgressLabel(task: AssemTask | null | undefined): string {
   if (!task) {
     return 'sin tarea';
@@ -220,6 +227,55 @@ function extractTaskPlan(task: AssemTask | null | undefined): TaskPlan | null {
   }
 
   return task.plan;
+}
+
+function extractResearchSummary(task: AssemTask | null | undefined): {
+  found: number;
+  selected: number;
+  discarded: number;
+  read: number;
+  snippetOnly: number;
+  evidence: number;
+  evidenceLevel?: string;
+  searchError?: string;
+} | null {
+  if (!task || !isObjectRecord(task.metadata)) {
+    return null;
+  }
+
+  const research = task.metadata.research;
+  if (!isObjectRecord(research)) {
+    return null;
+  }
+
+  const selectedSources = Array.isArray(research.sourcesSelected)
+    ? research.sourcesSelected.filter(isObjectRecord)
+    : [];
+  const evidence = Array.isArray(research.evidence) ? research.evidence.length : 0;
+
+  return {
+    found: Array.isArray(research.sourcesFound) ? research.sourcesFound.length : 0,
+    selected: selectedSources.length,
+    discarded: Array.isArray(research.sourcesDiscarded)
+      ? research.sourcesDiscarded.length
+      : 0,
+    read: selectedSources.filter(
+      (source) =>
+        source.evidenceLevel === 'page_read' ||
+        source.fetchStatus === 'ok' ||
+        source.usedAs === 'page_read'
+    ).length,
+    snippetOnly: selectedSources.filter(
+      (source) =>
+        source.evidenceLevel === 'snippet_only' ||
+        source.usedAs === 'snippet_only'
+    ).length,
+    evidence,
+    evidenceLevel:
+      typeof research.evidenceLevel === 'string' ? research.evidenceLevel : undefined,
+    searchError:
+      typeof research.searchError === 'string' ? research.searchError : undefined
+  };
 }
 
 function extractPendingPlannedSteps(task: AssemTask | null | undefined): string[] {
@@ -466,6 +522,7 @@ export default function App() {
   const activeConversationTaskArtifacts = activeConversationTask?.artifacts.slice(-3) ?? [];
   const activeConversationTaskRefinements = extractTaskRefinements(activeConversationTask);
   const activeConversationTaskPlan = extractTaskPlan(activeConversationTask);
+  const activeConversationResearchSummary = extractResearchSummary(activeConversationTask);
   const activeConversationTaskPendingPlanSteps = extractPendingPlannedSteps(
     activeConversationTask
   );
@@ -508,8 +565,10 @@ export default function App() {
   const actionLog = [...(currentSession?.actionLog ?? [])].reverse();
   const overrides = currentSession?.temporaryOverrides ?? [];
   const pendingActions = currentSession?.pendingAction
-    ? [currentSession.pendingAction]
-    : systemState?.pendingActions ?? [];
+    ? isVisiblePendingAction(currentSession.pendingAction)
+      ? [currentSession.pendingAction]
+      : []
+    : (systemState?.pendingActions ?? []).filter(isVisiblePendingAction);
   const enabledScheduledTaskCount = tasks.filter((task) => task.enabled).length;
   const lastAction = actionLog[0] ?? null;
   const lastTelemetry = recentTelemetry[0] ?? null;
@@ -1208,8 +1267,19 @@ export default function App() {
                   <span>{taskProgressLabel(activeConversationTask)}</span>
                   <span>{activeConversationTask?.currentPhase ?? 'sin fase'}</span>
                   <span>{activeConversationTaskStep?.label ?? 'sin paso activo'}</span>
+                  {activeConversationResearchSummary && (
+                    <span>
+                      Fuentes: {activeConversationResearchSummary.selected}/
+                      {activeConversationResearchSummary.found} · leidas{' '}
+                      {activeConversationResearchSummary.read} · evidencia{' '}
+                      {activeConversationResearchSummary.evidence}
+                    </span>
+                  )}
                   {activeConversationTaskArtifacts[0] && <span>Artefacto: {activeConversationTaskArtifacts[0].label}</span>}
                   {activeConversationTaskRefinements[0] && <span>Ajuste: {activeConversationTaskRefinements[0].label}</span>}
+                  {activeConversationResearchSummary?.searchError && (
+                    <span>Busqueda: error</span>
+                  )}
                 </div>
               </article>
             </div>
@@ -1527,6 +1597,21 @@ export default function App() {
                       <p className="small-copy">
                         Artefactos: {activeConversationTask.artifacts.length}
                       </p>
+                      {activeConversationResearchSummary && (
+                        <p className="small-copy">
+                          Fuentes research: {activeConversationResearchSummary.selected}{' '}
+                          seleccionadas de {activeConversationResearchSummary.found};{' '}
+                          {activeConversationResearchSummary.read} leidas;{' '}
+                          {activeConversationResearchSummary.snippetOnly} snippet-only;{' '}
+                          {activeConversationResearchSummary.evidence} evidencia(s)
+                          {activeConversationResearchSummary.evidenceLevel
+                            ? ` - nivel: ${activeConversationResearchSummary.evidenceLevel}`
+                            : ''}
+                          {activeConversationResearchSummary.searchError
+                            ? ` - error: ${activeConversationResearchSummary.searchError}`
+                            : ''}
+                        </p>
+                      )}
                       {activeConversationTaskArtifacts.length > 0 && (
                         <div className="stack stack--tight">
                           {activeConversationTaskArtifacts.map((artifact) => (

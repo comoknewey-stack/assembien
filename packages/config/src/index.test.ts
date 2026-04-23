@@ -32,6 +32,18 @@ const trackedKeys = [
   'ASSEM_WHISPER_CPP_THREADS',
   'ASSEM_WHISPER_CPP_BEAM_SIZE',
   'ASSEM_WHISPER_CPP_INITIAL_PROMPT',
+  'ASSEM_WEB_SEARCH_PROVIDER',
+  'ASSEM_WEB_SEARCH_API_KEY',
+  'ASSEM_WEB_SEARCH_ENDPOINT',
+  'ASSEM_WEB_SEARCH_MAX_RESULTS',
+  'ASSEM_WEB_SEARCH_TIMEOUT_MS',
+  'ASSEM_WEB_PAGE_FETCH_ENABLED',
+  'ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS',
+  'ASSEM_WEB_PAGE_MAX_SOURCES',
+  'ASSEM_WEB_PAGE_MAX_CONTENT_CHARS',
+  'ASSEM_WEB_PAGE_MIN_TEXT_CHARS',
+  'ASSEM_WEB_PAGE_MIN_TEXT_DENSITY',
+  'ASSEM_WEB_PAGE_MAX_LINK_DENSITY',
   'ASSEM_ALLOWED_ORIGINS'
 ] as const;
 
@@ -178,5 +190,38 @@ describe('createAssemConfig', () => {
     expect(config.whisperCppModelPath).toMatch(
       /\.assem-runtime[\\/]whispercpp[\\/]models[\\/]ggml-base\.bin$/
     );
+  });
+
+  it('loads web search config and clamps max results to the absolute cap', () => {
+    clearTrackedEnv();
+    process.env.ASSEM_WEB_SEARCH_PROVIDER = 'brave';
+    process.env.ASSEM_WEB_SEARCH_API_KEY = 'test-key';
+    process.env.ASSEM_WEB_SEARCH_ENDPOINT = 'https://api.search.brave.com/res/v1/web/search';
+    process.env.ASSEM_WEB_SEARCH_MAX_RESULTS = '99';
+    process.env.ASSEM_WEB_SEARCH_TIMEOUT_MS = '12000';
+    process.env.ASSEM_WEB_PAGE_FETCH_ENABLED = 'true';
+    process.env.ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS = '13000';
+    process.env.ASSEM_WEB_PAGE_MAX_SOURCES = '99';
+    process.env.ASSEM_WEB_PAGE_MAX_CONTENT_CHARS = '999999';
+    process.env.ASSEM_WEB_PAGE_MIN_TEXT_CHARS = '320';
+    process.env.ASSEM_WEB_PAGE_MIN_TEXT_DENSITY = '0.27';
+    process.env.ASSEM_WEB_PAGE_MAX_LINK_DENSITY = '0.48';
+
+    const config = createAssemConfig();
+
+    expect(config.webSearchProvider).toBe('brave');
+    expect(config.webSearchApiKey).toBe('test-key');
+    expect(config.webSearchEndpoint).toBe(
+      'https://api.search.brave.com/res/v1/web/search'
+    );
+    expect(config.webSearchMaxResults).toBe(10);
+    expect(config.webSearchTimeoutMs).toBe(12000);
+    expect(config.webPageFetchEnabled).toBe(true);
+    expect(config.webPageFetchTimeoutMs).toBe(13000);
+    expect(config.webPageMaxSources).toBe(5);
+    expect(config.webPageMaxContentChars).toBe(50000);
+    expect(config.webPageMinTextChars).toBe(320);
+    expect(config.webPageMinTextDensity).toBe(0.27);
+    expect(config.webPageMaxLinkDensity).toBe(0.48);
   });
 });

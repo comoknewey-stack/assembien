@@ -52,6 +52,14 @@ Current status-style messages include patterns such as:
 - `ya terminaste`
 - `cual es el plan`
 - `que pasos vas a seguir`
+- `que fuentes has encontrado`
+- `que fuentes estas usando`
+- `cuantas fuentes tienes`
+- `que fuentes has leido de verdad`
+- `que paginas has podido leer`
+- `que fuentes usaste solo como snippet`
+- `que evidencia tienes`
+- `que fuentes descartaste`
 
 Current control messages include patterns such as:
 
@@ -75,6 +83,12 @@ Current output refinements:
 - `hazlo en espanol`
 - `primero dame un resumen`
 - `anade una tabla`
+
+Current research/source refinements:
+
+- `usa fuentes oficiales`
+- `no uses blogs`
+- `prioriza fuentes recientes`
 
 Current goal refinement shape:
 
@@ -156,6 +170,9 @@ Current event types:
 - `task_interrupt_refinement`
 - `task_interrupt_clarification`
 - `task_interrupt_independent_query`
+- `task_interrupt_sources_query`
+
+Research/source queries are answered from persisted task state, not from free-form model text. If a research task failed, has no selected sources or never generated an artifact, Interrupt Handler routes the question through deterministic task-state rendering so ASSEM does not invent sources, reports or paths.
 
 These events are recorded separately from chat history.
 

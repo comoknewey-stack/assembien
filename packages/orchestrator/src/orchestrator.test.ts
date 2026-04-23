@@ -17,11 +17,13 @@ import type {
   AssemTask,
   AssemConfig,
   ModelRouter as ModelRouterContract,
+  PendingAction,
   TaskExecutionRequest,
   TaskRuntime as TaskRuntimeContract,
   TelemetryRecord,
   TelemetrySink,
-  TelemetrySummary
+  TelemetrySummary,
+  WebSearchProvider
 } from '@assem/shared-types';
 import { ToolRegistry } from '@assem/tool-registry';
 
@@ -104,6 +106,29 @@ function extractTaskRefinementLabels(task: AssemTask | null | undefined): string
   return refinements
     .map((refinement) => refinement.label)
     .filter((label): label is string => typeof label === 'string');
+}
+
+function createTestPendingAction(
+  overrides: Partial<PendingAction> = {}
+): PendingAction {
+  const now = new Date().toISOString();
+  return {
+    id: 'pending-test',
+    toolId: 'local-files.create-entry',
+    toolLabel: 'Create local file or folder',
+    input: {
+      kind: 'file',
+      relativePath: 'nota.txt'
+    },
+    reason: 'Test pending action',
+    riskLevel: 'medium',
+    permissions: ['write_safe'],
+    confirmationMessage: 'Confirma crear el archivo "nota.txt" dentro del sandbox?',
+    status: 'pending',
+    createdAt: now,
+    updatedAt: now,
+    ...overrides
+  };
 }
 
 class InMemoryTelemetrySink implements TelemetrySink {
@@ -195,6 +220,26 @@ class TestTaskRuntime implements TaskRuntimeContract {
 interface TestOrchestratorOptions {
   configOverrides?: Partial<AssemConfig>;
   modelRouter?: ModelRouterContract;
+  webSearchProvider?: WebSearchProvider;
+}
+
+function createMockWebSearchProvider(configured = true): WebSearchProvider {
+  return {
+    id: configured ? 'brave' : 'disabled',
+    label: configured ? 'Brave Search' : 'Web search disabled',
+    maxResults: 5,
+    getStatus() {
+      return {
+        providerId: this.id,
+        configured,
+        available: configured,
+        maxResults: 5
+      };
+    },
+    async search() {
+      throw new Error('Mock web search is not executed by orchestrator tests.');
+    }
+  };
 }
 
 async function createOrchestrator(options: TestOrchestratorOptions = {}) {
@@ -209,6 +254,7 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
   const localFilesTools = createLocalFilesTools();
   const taskManager = new InMemoryTaskManager();
   const taskRuntime = new TestTaskRuntime(taskManager);
+  const sessionStore = new InMemorySessionStore('demo-local');
 
   toolRegistry.register(createClockTimeTool());
   toolRegistry.register(localFilesTools[0]);
@@ -254,11 +300,25 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
         whisperCppCliPath: undefined,
         whisperCppModelPath: undefined,
         whisperCppThreads: 4,
+        whisperCppInitialPrompt: undefined,
+        whisperCppBeamSize: undefined,
+        webSearchProvider: 'brave',
+        webSearchApiKey: 'test-key',
+        webSearchEndpoint: 'https://api.search.brave.com/res/v1/web/search',
+        webSearchMaxResults: 5,
+        webSearchTimeoutMs: 10_000,
+        webPageFetchEnabled: true,
+        webPageFetchTimeoutMs: 12_000,
+        webPageMaxSources: 3,
+        webPageMaxContentChars: 20_000,
+        webPageMinTextChars: 220,
+        webPageMinTextDensity: 0.18,
+        webPageMaxLinkDensity: 0.55,
         allowedOrigins: [],
         ...options.configOverrides
       },
       actionLog: new ActionLogService(),
-      sessionStore: new InMemorySessionStore('demo-local'),
+      sessionStore,
       toolRegistry,
       policyEngine: new PolicyEngine(),
       modelRouter:
@@ -267,8 +327,10 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
       memoryBackend: profileBackend,
       telemetry,
       taskManager,
-      taskRuntime
+      taskRuntime,
+      webSearchProvider: options.webSearchProvider ?? createMockWebSearchProvider(true)
     }),
+    sessionStore,
     sandboxRoot,
     telemetry
   };
@@ -725,6 +787,10 @@ describe('AssemOrchestrator', () => {
   it.each([
     'confirmo',
     'confirmo todo',
+    'lo confirmo',
+    'lo confirmo todo',
+    'Lo confirmo, hazlo.',
+    'confirmo todo, hazlo',
     'la confirmo',
     'confirmo todas las acciones pendientes',
     'hazlo',
@@ -801,6 +867,58 @@ describe('AssemOrchestrator', () => {
     expect(snapshot.pendingAction?.toolId).toBe('local-files.create-entry');
     expect(snapshot.messages.at(-1)?.content).toBe(
       'Todavia hay una accion pendiente esperando confirmacion. Confirmala, rechazala o cancelala antes de iniciar otra accion de escritura.'
+    );
+  });
+
+  it('does not block the chat with a completed pending-action ghost', async () => {
+    const { orchestrator, sessionStore } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const state = await sessionStore.getSession(session.sessionId);
+
+    expect(state).not.toBeNull();
+    state!.pendingAction = createTestPendingAction({ status: 'completed' });
+    await sessionStore.saveSession(state!);
+
+    const visibleBeforeChat = await orchestrator.getSessionSnapshot(session.sessionId);
+    expect(visibleBeforeChat?.pendingAction).toBeNull();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'cuentame mas'
+    });
+    const sessions = await orchestrator.listSessions();
+
+    expect(snapshot.pendingAction).toBeNull();
+    expect(getLastAssistantMessage(snapshot)).not.toContain(
+      'Todavia hay una accion pendiente'
+    );
+    expect(
+      sessions.find((entry) => entry.sessionId === session.sessionId)
+        ?.hasPendingAction
+    ).toBe(false);
+  });
+
+  it('does not treat legacy pending-action objects without status as active confirmations', async () => {
+    const { orchestrator, sessionStore } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const state = await sessionStore.getSession(session.sessionId);
+
+    expect(state).not.toBeNull();
+    const legacyPendingAction = createTestPendingAction();
+    delete (legacyPendingAction as Partial<PendingAction>).status;
+    state!.pendingAction = legacyPendingAction as PendingAction;
+    await sessionStore.saveSession(state!);
+
+    const pendingActions = await orchestrator.listPendingActions(session.sessionId);
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'lo confirmo todo'
+    });
+
+    expect(pendingActions).toHaveLength(0);
+    expect(snapshot.pendingAction).toBeNull();
+    expect(getLastAssistantMessage(snapshot)).toBe(
+      'No hay ninguna accion pendiente para confirmar en esta sesion.'
     );
   });
 
@@ -1035,6 +1153,10 @@ describe('AssemOrchestrator', () => {
   it('creates an active task from chat and reports its real status', async () => {
     const { orchestrator, taskManager } = await createOrchestrator();
     const session = await orchestrator.createSession();
+    await orchestrator.updateMode({
+      sessionId: session.sessionId,
+      activeMode: { privacy: 'balanced' }
+    });
 
     const createdSnapshot = await orchestrator.handleChat({
       sessionId: session.sessionId,
@@ -1057,6 +1179,10 @@ describe('AssemOrchestrator', () => {
   it('creates a planned research task from "hazme un informe sobre X" and can answer with the real plan', async () => {
     const { orchestrator, taskManager, telemetry } = await createOrchestrator();
     const session = await orchestrator.createSession();
+    await orchestrator.updateMode({
+      sessionId: session.sessionId,
+      activeMode: { privacy: 'balanced' }
+    });
 
     const createdSnapshot = await orchestrator.handleChat({
       sessionId: session.sessionId,
@@ -1073,9 +1199,15 @@ describe('AssemOrchestrator', () => {
     expect(activeTask?.plan?.taskType).toBe('research_report_basic');
     expect(activeTask?.plan?.steps.map((step) => step.id)).toEqual([
       'prepare-workspace',
-      'draft-report',
+      'search-web',
+      'select-sources',
+      'fetch-pages',
+      'extract-evidence',
+      'synthesize-findings',
       'write-report',
-      'write-summary'
+      'write-summary',
+      'write-sources',
+      'write-evidence'
     ]);
     expect(getLastAssistantMessage(planSnapshot)).toContain('research_report_basic');
     expect(getLastAssistantMessage(planSnapshot)).toContain(
@@ -1087,6 +1219,40 @@ describe('AssemOrchestrator', () => {
     expect(
       telemetry.records.some((record) => record.eventType === 'task_plan_applied')
     ).toBe(true);
+  });
+
+  it('blocks research in local_only before creating a task', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'hazme un informe sobre el consumo de galletas en Islandia'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('modo local_only');
+    expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
+  });
+
+  it('blocks research before creating a task when web search is not configured', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator({
+      webSearchProvider: createMockWebSearchProvider(false)
+    });
+    const session = await orchestrator.createSession();
+    await orchestrator.updateMode({
+      sessionId: session.sessionId,
+      activeMode: { privacy: 'balanced' }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'investiga el consumo de galletas en Islandia'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain(
+      'provider de busqueda web configurado'
+    );
+    expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
   });
 
   it('rejects unsupported open tasks honestly instead of inventing a plan', async () => {
@@ -1160,6 +1326,710 @@ describe('AssemOrchestrator', () => {
     expect(resumedStatus).toBe('active');
     expect(cancelledMessage).toContain('He cancelado la tarea');
     expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
+  });
+
+  it('answers source queries from persisted research metadata', async () => {
+    const { orchestrator, taskManager, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const retrievedAt = new Date().toISOString();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 45,
+      currentPhase: 'Seleccionar fuentes',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de galletas Islandia',
+          providerId: 'brave',
+          retrievedAt,
+          searchedAt: retrievedAt,
+          sourcesFound: [
+            {
+              id: 'source-1',
+              title: 'Statistics Iceland',
+              url: 'https://statice.is/example',
+              normalizedUrl: 'https://statice.is/example',
+              domain: 'statice.is',
+              retrievedAt,
+              selectionStatus: 'selected',
+              selectionReason: 'matched_query'
+            }
+          ],
+          sourcesSelected: [
+            {
+              id: 'source-1',
+              title: 'Statistics Iceland',
+              url: 'https://statice.is/example',
+              normalizedUrl: 'https://statice.is/example',
+              domain: 'statice.is',
+              retrievedAt,
+              selectionStatus: 'selected',
+              selectionReason: 'matched_query'
+            }
+          ],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: []
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que fuentes has encontrado'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Statistics Iceland');
+    expect(getLastAssistantMessage(snapshot)).toContain('statice.is');
+    expect(getLastAssistantMessage(snapshot)).toContain('https://statice.is/example');
+    expect(
+      telemetry.records.some((record) => record.eventType === 'task_interrupt_sources_query')
+    ).toBe(true);
+  });
+
+  it('answers progress for a failed research task from persisted failure state without inventing sources', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const searchedAt = new Date().toISOString();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas en Islandia',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Buscar fuentes web',
+      steps: [
+        {
+          id: 'search-web',
+          label: 'Buscar fuentes web'
+        }
+      ],
+      currentStepId: 'search-web',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de galletas Islandia',
+          providerId: 'brave',
+          searchedAt,
+          retrievedAt: searchedAt,
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          searchError: 'Brave Search timeout'
+        }
+      }
+    });
+    await taskManager.failTask(task.id, 'search-web failed');
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'como va la tarea'
+    });
+    const message = getLastAssistantMessage(snapshot);
+
+    expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
+    expect(message).toContain('Brave Search timeout');
+    expect(message).toContain('No hay report.md registrado');
+    expect(message).toContain('Fuentes persistidas: 0 seleccionada');
+    expect(message).not.toContain('New York Times');
+    expect(message).not.toContain('Euromonitor');
+  });
+
+  it('does not claim a failed research report is ready when no report artifact exists', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const searchedAt = new Date().toISOString();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas en Islandia',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Buscar fuentes web',
+      steps: [
+        {
+          id: 'search-web',
+          label: 'Buscar fuentes web'
+        }
+      ],
+      currentStepId: 'search-web',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de galletas Islandia',
+          providerId: 'brave',
+          searchedAt,
+          retrievedAt: searchedAt,
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          searchError: 'Provider not configured'
+        }
+      }
+    });
+    await taskManager.failTask(task.id, 'search-web failed');
+
+    const doneSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'ya esta?'
+    });
+    const doneMessage = getLastAssistantMessage(doneSnapshot);
+    const locationSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'donde esta el informe?'
+    });
+    const locationMessage = getLastAssistantMessage(locationSnapshot);
+
+    expect(doneMessage).toContain('No.');
+    expect(doneMessage).toContain('No hay artefacto de informe registrado');
+    expect(locationMessage).toContain('No se genero report.md');
+    expect(locationMessage).toContain('Provider not configured');
+  });
+
+  it('does not present a workspace folder as a final report artifact', async () => {
+    const { orchestrator, taskManager, sandboxRoot } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const workspacePath = path.join(sandboxRoot, 'research-galletas');
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 10,
+      currentPhase: 'Preparar workspace local',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+    await taskManager.attachArtifact(task.id, {
+      kind: 'directory',
+      label: 'Carpeta de trabajo',
+      filePath: workspacePath
+    });
+
+    const reportSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'donde esta el informe?'
+    });
+    const reportMessage = getLastAssistantMessage(reportSnapshot);
+    const workspaceSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'donde esta la carpeta de trabajo?'
+    });
+    const workspaceMessage = getLastAssistantMessage(workspaceSnapshot);
+
+    expect(reportMessage).toContain(
+      'No hay ningun artefacto report.md registrado'
+    );
+    expect(reportMessage).toContain(workspacePath);
+    expect(workspaceMessage).toContain(workspacePath);
+    expect(workspaceMessage).not.toContain('report.md');
+  });
+
+  it('returns the exact persisted report path for a completed research task', async () => {
+    const { orchestrator, taskManager, sandboxRoot } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const reportPath = path.join(sandboxRoot, 'research-galletas', 'report.md');
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 90,
+      currentPhase: 'Guardar informe',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+    await taskManager.attachArtifact(task.id, {
+      kind: 'report',
+      label: 'Informe principal',
+      filePath: reportPath,
+      contentType: 'text/markdown'
+    });
+    await taskManager.completeTask(task.id);
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'donde esta el informe?'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain(reportPath);
+    expect(getLastAssistantMessage(snapshot)).toContain('El informe registrado');
+  });
+
+  it('answers source queries honestly when research has no selected sources', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const retrievedAt = new Date().toISOString();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 45,
+      currentPhase: 'Seleccionar fuentes',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de galletas Islandia',
+          providerId: 'brave',
+          retrievedAt,
+          searchedAt: retrievedAt,
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: []
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que fuentes has encontrado?'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('No hay fuentes seleccionadas');
+    expect(getLastAssistantMessage(snapshot)).toContain('Resultados encontrados persistidos: 0');
+  });
+
+  it('answers "que fuentes has leido de verdad" from persisted page-read state', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre refrescos',
+      status: 'active',
+      progressPercent: 60,
+      currentPhase: 'Leer paginas seleccionadas',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de refrescos usa',
+          providerId: 'brave',
+          retrievedAt: new Date().toISOString(),
+          searchedAt: new Date().toISOString(),
+          sourcesFound: [],
+          sourcesSelected: [
+            {
+              id: 'src-1',
+              title: 'USDA food data',
+              url: 'https://www.usda.gov/food-data',
+              normalizedUrl: 'https://www.usda.gov/food-data',
+              domain: 'usda.gov',
+              selectionStatus: 'selected',
+              selectionReason: 'official_preferred',
+              fetchAttempted: true,
+              fetchStatus: 'ok',
+              evidenceLevel: 'page_read',
+              evidenceStrength: 'strong',
+              evidenceRelevance: 'direct',
+              readQuality: 'high',
+              usedAs: 'page_read'
+            }
+          ],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          pagesFetched: [
+            {
+              sourceId: 'src-1',
+              url: 'https://www.usda.gov/food-data',
+              fetchedAt: new Date().toISOString(),
+              fetchStatus: 'ok',
+              contentType: 'text/html'
+            }
+          ],
+          evidence: []
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que fuentes has leido de verdad'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('USDA food data');
+    expect(getLastAssistantMessage(snapshot)).toContain('usda.gov');
+    expect(getLastAssistantMessage(snapshot)).toContain('https://www.usda.gov/food-data');
+  });
+
+  it('answers "que fuentes tienen evidencia fuerte" from persisted evidence strength', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre refrescos',
+      status: 'active',
+      progressPercent: 72,
+      currentPhase: 'Extraer evidencia',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de refrescos usa',
+          providerId: 'brave',
+          retrievedAt: new Date().toISOString(),
+          searchedAt: new Date().toISOString(),
+          sourcesFound: [],
+          sourcesSelected: [
+            {
+              id: 'src-strong',
+              title: 'USDA food data',
+              url: 'https://www.usda.gov/food-data',
+              normalizedUrl: 'https://www.usda.gov/food-data',
+              domain: 'usda.gov',
+              selectionStatus: 'selected',
+              selectionReason: 'official_preferred',
+              evidenceLevel: 'page_read',
+              evidenceStrength: 'strong',
+              evidenceRelevance: 'direct',
+              readQuality: 'high',
+              usedAs: 'page_read'
+            },
+            {
+              id: 'src-weak',
+              title: 'Packaging market blog',
+              url: 'https://example.org/packaging',
+              normalizedUrl: 'https://example.org/packaging',
+              domain: 'example.org',
+              selectionStatus: 'selected',
+              selectionReason: 'selected_tangential',
+              evidenceLevel: 'snippet_only',
+              evidenceStrength: 'tangential',
+              evidenceRelevance: 'tangential',
+              usedAs: 'snippet_only'
+            }
+          ],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          evidenceStrength: 'strong'
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que fuentes tienen evidencia fuerte'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('USDA food data');
+    expect(getLastAssistantMessage(snapshot)).toContain('strength: strong');
+    expect(getLastAssistantMessage(snapshot)).not.toContain('Packaging market blog');
+  });
+
+  it('answers "que fuentes usaste solo como snippet" from persisted snippet-only state', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre refrescos',
+      status: 'active',
+      progressPercent: 65,
+      currentPhase: 'Extraer evidencia',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de refrescos usa',
+          providerId: 'brave',
+          retrievedAt: new Date().toISOString(),
+          searchedAt: new Date().toISOString(),
+          sourcesFound: [],
+          sourcesSelected: [
+            {
+              id: 'src-2',
+              title: 'Market overview',
+              url: 'https://example.org/overview',
+              normalizedUrl: 'https://example.org/overview',
+              domain: 'example.org',
+              selectionStatus: 'selected',
+              selectionReason: 'matched_query',
+              evidenceLevel: 'snippet_only',
+              usedAs: 'snippet_only',
+              snippet: 'Snippet persisted for evidence.'
+            }
+          ],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: []
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que fuentes usaste solo como snippet'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Market overview');
+    expect(getLastAssistantMessage(snapshot)).toContain('example.org');
+  });
+
+  it('answers "que evidencia tienes" from persisted evidence records', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre refrescos',
+      status: 'active',
+      progressPercent: 75,
+      currentPhase: 'Sintetizar hallazgos',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de refrescos usa',
+          providerId: 'brave',
+          retrievedAt: new Date().toISOString(),
+          searchedAt: new Date().toISOString(),
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          evidence: [
+            {
+              id: 'ev-1',
+              sourceId: 'src-1',
+              sourceTitle: 'USDA food data',
+              sourceUrl: 'https://www.usda.gov/food-data',
+              sourceDomain: 'usda.gov',
+              evidenceLevel: 'page_read',
+              evidenceStrength: 'strong',
+              evidenceRelevance: 'direct',
+              basis: 'page_content',
+              summary: 'USDA data indicates category-level beverage consumption trends.',
+              facts: ['USDA data indicates category-level beverage consumption trends.'],
+              extractedAt: new Date().toISOString()
+            }
+          ]
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que evidencia tienes'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('USDA food data');
+    expect(getLastAssistantMessage(snapshot)).toContain('page_content');
+    expect(getLastAssistantMessage(snapshot)).toContain('beverage consumption trends');
+  });
+
+  it('answers "que limitaciones tiene este informe" from persisted research limitations', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre refrescos',
+      status: 'active',
+      progressPercent: 80,
+      currentPhase: 'Sintetizar hallazgos',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de refrescos usa',
+          providerId: 'brave',
+          retrievedAt: new Date().toISOString(),
+          searchedAt: new Date().toISOString(),
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [
+            'Parte del informe se apoya en snippets y fuentes tangenciales.',
+            'Solo una pagina se pudo leer con calidad media.'
+          ],
+          evidenceStrength: 'weak'
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que limitaciones tiene este informe'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('snippets y fuentes tangenciales');
+    expect(getLastAssistantMessage(snapshot)).toContain('calidad media');
+  });
+
+  it('answers "que fuentes descartaste" from persisted discarded sources', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre refrescos',
+      status: 'active',
+      progressPercent: 55,
+      currentPhase: 'Seleccionar fuentes',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de refrescos usa',
+          providerId: 'brave',
+          retrievedAt: new Date().toISOString(),
+          searchedAt: new Date().toISOString(),
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [
+            {
+              id: 'src-3',
+              title: 'Personal beverage blog',
+              url: 'https://beverageblog.example/post',
+              normalizedUrl: 'https://beverageblog.example/post',
+              domain: 'beverageblog.example',
+              selectionStatus: 'discarded',
+              selectionReason: 'blog_excluded'
+            }
+          ],
+          selectionNotes: [],
+          limitations: []
+        }
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que fuentes descartaste'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('Personal beverage blog');
+    expect(getLastAssistantMessage(snapshot)).toContain('blog_excluded');
+  });
+
+  it('answers source queries with the persisted search error when research failed', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const searchedAt = new Date().toISOString();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Buscar fuentes web',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de galletas Islandia',
+          providerId: 'brave',
+          retrievedAt: searchedAt,
+          searchedAt,
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          searchError: 'Network error'
+        }
+      }
+    });
+    await taskManager.failTask(task.id, 'search-web failed');
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que fuentes has encontrado?'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain('La busqueda fallo: Network error');
+    expect(getLastAssistantMessage(snapshot)).toContain('No voy a inventar fuentes');
+  });
+
+  it('does not pretend to apply source refinements to a failed research task', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const searchedAt = new Date().toISOString();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Buscar fuentes web',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de galletas Islandia',
+          providerId: 'brave',
+          retrievedAt: searchedAt,
+          searchedAt,
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          searchError: 'Network error'
+        }
+      }
+    });
+    await taskManager.failTask(task.id, 'search-web failed');
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'usa fuentes oficiales'
+    });
+    const failedTask = await taskManager.getTask(task.id);
+
+    expect(getLastAssistantMessage(snapshot)).toContain('No he aplicado');
+    expect(getLastAssistantMessage(snapshot)).toContain('Network error');
+    expect(extractTaskRefinementLabels(failedTask)).not.toContain(
+      'Priorizar fuentes oficiales'
+    );
+  });
+
+  it('still lets independent questions go to the model after a failed task', async () => {
+    const modelRouter: ModelRouterContract = {
+      listProviders() {
+        return [];
+      },
+      async healthCheck() {
+        return [];
+      },
+      async respond() {
+        return {
+          text: 'Respuesta libre desde el modelo.',
+          confidence: 0.7,
+          providerId: 'demo-local',
+          model: 'demo-local-heuristic',
+          fallbackUsed: false,
+          finishReason: 'stop'
+        };
+      }
+    };
+    const { orchestrator, taskManager } = await createOrchestrator({
+      modelRouter
+    });
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 25,
+      currentPhase: 'Buscar fuentes web',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de galletas Islandia',
+          providerId: 'brave',
+          sourcesFound: [],
+          sourcesSelected: [],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: [],
+          searchError: 'Network error'
+        }
+      }
+    });
+    await taskManager.failTask(task.id, 'search-web failed');
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'cuentame una curiosidad'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toBe('Respuesta libre desde el modelo.');
   });
 
   it('keeps the active task intact while answering an independent question like "que hora es"', async () => {
@@ -1271,6 +2141,40 @@ describe('AssemOrchestrator', () => {
     expect(updatedTask?.plan?.restrictions.join(' ')).toContain('Idioma de salida');
   });
 
+  it('stores source refinements for active research tasks', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre galletas',
+      status: 'active',
+      progressPercent: 20,
+      currentPhase: 'Buscar fuentes web',
+      steps: [
+        {
+          id: 'search-web',
+          label: 'Buscar fuentes web'
+        }
+      ],
+      currentStepId: 'search-web',
+      metadata: {
+        taskType: 'research_report_basic'
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'usa fuentes oficiales'
+    });
+    const updatedTask = await taskManager.getTask(task.id);
+
+    expect(getLastAssistantMessage(snapshot)).toContain('fuentes');
+    expect(extractTaskRefinementLabels(updatedTask)).toContain(
+      'Priorizar fuentes oficiales'
+    );
+    expect(updatedTask?.plan?.restrictions.join(' ')).toContain('Fuentes');
+  });
+
   it('reorders the pending plan when the user says "primero dame un resumen"', async () => {
     const { orchestrator, taskManager } = await createOrchestrator();
     const session = await orchestrator.createSession();
@@ -1312,9 +2216,15 @@ describe('AssemOrchestrator', () => {
 
     expect(updatedTask?.plan?.steps.map((step) => step.id)).toEqual([
       'prepare-workspace',
-      'draft-report',
+      'search-web',
+      'select-sources',
+      'fetch-pages',
+      'extract-evidence',
+      'synthesize-findings',
       'write-summary',
-      'write-report'
+      'write-report',
+      'write-sources',
+      'write-evidence'
     ]);
   });
 

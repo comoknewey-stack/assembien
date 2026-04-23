@@ -101,7 +101,7 @@ function summarizeSession(session: SessionState): SessionSummary {
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     messageCount: session.messages.length,
-    hasPendingAction: session.pendingAction !== null,
+    hasPendingAction: session.pendingAction?.status === 'pending',
     activeMode: session.activeMode
   };
 }

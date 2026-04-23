@@ -25,7 +25,12 @@ import type {
   TaskExecutionResult,
   TaskRunner,
   TaskRuntimeEvent,
-  TaskStep
+  TaskStep,
+  ToolDefinition,
+  WebPageFetchInput,
+  WebPageFetchOutput,
+  WebSearchInput,
+  WebSearchOutput
 } from '@assem/shared-types';
 
 import {
@@ -61,9 +66,11 @@ async function waitForTask(
   timeoutMs = 4_000
 ): Promise<AssemTask> {
   const startedAt = Date.now();
+  let lastTask: AssemTask | null = null;
 
   while (Date.now() - startedAt < timeoutMs) {
     const task = await taskManager.getTask(taskId);
+    lastTask = task ?? null;
     if (task && predicate(task)) {
       return task;
     }
@@ -71,7 +78,18 @@ async function waitForTask(
     await sleep(20);
   }
 
-  throw new Error(`Timed out while waiting for task ${taskId}.`);
+  throw new Error(
+    `Timed out while waiting for task ${taskId}. Last task state: ${JSON.stringify(
+      lastTask
+        ? {
+            status: lastTask.status,
+            currentPhase: lastTask.currentPhase,
+            failureReason: lastTask.failureReason,
+            progressPercent: lastTask.progressPercent
+          }
+        : null
+    )}.`
+  );
 }
 
 class TestMemoryBackend implements MemoryBackend {
@@ -206,7 +224,7 @@ function createModelRouter(
       }
 
       return {
-        text: '# Informe de trabajo\n\n## Objetivo\nPreparar informe semanal\n\n## Hallazgos iniciales\n- El runtime genero un borrador local.\n- La salida es determinista en tests.\n\n## Riesgos o limites\n- No hay navegacion web.\n\n## Proximos pasos\n- Revisar el informe.',
+        text: '# Informe de trabajo\n\n## Objetivo\nPreparar informe semanal\n\n## Hallazgos principales\n- El runtime uso fuentes seleccionadas por la busqueda mock.\n- La salida es determinista en tests.\n\n## Limites de evidencia\n- Se usa evidencia persistida por Research v2.\n\n## Fuentes usadas\n- [1] Statistics Iceland biscuit data (statice.is): https://statice.is/example',
         confidence: 0.81,
         providerId: 'demo-local',
         model: 'demo-local-heuristic',
@@ -219,24 +237,140 @@ function createModelRouter(
   };
 }
 
+function createMockWebSearchTool(
+  override?: Partial<WebSearchOutput> | Error
+): ToolDefinition<WebSearchInput, WebSearchOutput> {
+  return {
+    id: 'web-search.search',
+    label: 'Mock web search',
+    description: 'Mocked web search for task runtime tests.',
+    riskLevel: 'low',
+    requiresConfirmation: false,
+    requiresPermissions: ['external_communication', 'read_only'],
+    async execute(input) {
+      if (override instanceof Error) {
+        throw override;
+      }
+
+      const output: WebSearchOutput = {
+        providerId: override?.providerId ?? 'mock-search',
+        query: override?.query ?? input.query,
+        retrievedAt: override?.retrievedAt ?? new Date().toISOString(),
+        results:
+          override?.results ?? [
+            {
+              title: 'Statistics Iceland biscuit data',
+              url: 'https://statice.is/example?utm_source=test',
+              snippet: 'Official statistics mention household food consumption.',
+              source: 'Statistics Iceland',
+              retrievedAt: new Date().toISOString()
+            },
+            {
+              title: 'Iceland food market overview',
+              url: 'https://example.org/food-market',
+              snippet: 'A market overview describes cookie and biscuit categories.',
+              source: 'Example Research',
+              retrievedAt: new Date().toISOString()
+            },
+            {
+              title: 'Duplicate Statistics Iceland',
+              url: 'https://statice.is/example',
+              snippet: 'Duplicate result.',
+              source: 'Statistics Iceland',
+              retrievedAt: new Date().toISOString()
+            }
+          ]
+      };
+
+      return {
+        summary: `Found ${output.results.length} result(s).`,
+        output
+      };
+    }
+  };
+}
+
+function createMockWebPageReaderTool(
+  override?: Partial<WebPageFetchOutput> | Error
+): ToolDefinition<WebPageFetchInput, WebPageFetchOutput> {
+  return {
+    id: 'web-page-reader.fetch-page',
+    label: 'Mock page reader',
+    description: 'Mocked page reader for task runtime tests.',
+    riskLevel: 'low',
+    requiresConfirmation: false,
+    requiresPermissions: ['external_communication', 'read_only'],
+    async execute(input) {
+      if (override instanceof Error) {
+        throw override;
+      }
+
+      const output: WebPageFetchOutput = {
+        url: input.url,
+        finalUrl: override?.finalUrl ?? input.url,
+        title: override?.title ?? 'Readable source page',
+        contentText:
+          override?.contentText ??
+          'This readable page explains that public food consumption evidence can be extracted from selected sources. The page includes enough text for Research v2 tests.',
+        excerpt:
+          override?.excerpt ??
+          'This readable page explains that public food consumption evidence can be extracted from selected sources. The page includes enough text for Research v2 tests.',
+        contentLength: override?.contentLength ?? 145,
+        fetchedAt: override?.fetchedAt ?? new Date().toISOString(),
+        status: override?.status ?? 'ok',
+        httpStatus: override?.httpStatus ?? 200,
+        contentType: override?.contentType ?? 'text/html',
+        readQuality: override?.readQuality ?? 'high',
+        qualityScore: override?.qualityScore ?? 0.82,
+        textDensity: override?.textDensity ?? 0.42,
+        linkDensity: override?.linkDensity ?? 0.08,
+        qualityNotes: override?.qualityNotes ?? ['readable_editorial_content'],
+        errorMessage: override?.errorMessage,
+        safetyNotes: override?.safetyNotes
+      };
+
+      return {
+        summary: `Read ${output.url}: ${output.status}.`,
+        output
+      };
+    }
+  };
+}
+
 async function createRuntimeHarness(
-  onRespond?: (request: ModelRequest) => Promise<ModelResponse> | ModelResponse
+  onRespond?: (request: ModelRequest) => Promise<ModelResponse> | ModelResponse,
+  webSearchOverride?: Partial<WebSearchOutput> | Error,
+  pageReaderOverride?: Partial<WebPageFetchOutput> | Error,
+  runtimeOptions: {
+    researchPageFetchEnabled?: boolean;
+    researchPageFetchMaxSources?: number;
+  } = {}
 ) {
   const sandboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'assem-runtime-sandbox-'));
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'assem-runtime-data-'));
   const taskManager = new FileTaskManager(path.join(dataRoot, 'tasks.json'));
   const sessionStore = new InMemorySessionStore('demo-local');
   const session = await sessionStore.createSession();
+  session.activeMode = {
+    privacy: 'balanced',
+    runtime: 'sandbox'
+  };
+  await sessionStore.saveSession(session);
   const events: TaskRuntimeEvent[] = [];
+  const toolRegistry = new ToolRegistry();
+  toolRegistry.register(createMockWebSearchTool(webSearchOverride));
+  toolRegistry.register(createMockWebPageReaderTool(pageReaderOverride));
   const runtime = new TaskRuntimeExecutor(
     {
       taskManager,
       sessionStore,
       memoryBackend: new TestMemoryBackend(),
-      toolRegistry: new ToolRegistry(),
+      toolRegistry,
       modelRouter: createModelRouter(onRespond),
       sandboxRoot,
-      dataRoot
+      dataRoot,
+      researchPageFetchEnabled: runtimeOptions.researchPageFetchEnabled,
+      researchPageFetchMaxSources: runtimeOptions.researchPageFetchMaxSources
     },
     {
       onEvent: async (event) => {
@@ -399,7 +533,9 @@ describe('TaskRuntimeExecutor', () => {
     expect(completedTask.artifacts.map((artifact) => artifact.label)).toEqual([
       'Carpeta de trabajo',
       'Informe principal',
-      'Resumen ejecutivo'
+      'Resumen ejecutivo',
+      'Auditoria de fuentes',
+      'Evidencia extraida'
     ]);
 
     const reportArtifact = completedTask.artifacts.find(
@@ -408,12 +544,36 @@ describe('TaskRuntimeExecutor', () => {
     const summaryArtifact = completedTask.artifacts.find(
       (artifact) => artifact.label === 'Resumen ejecutivo'
     );
+    const sourcesArtifact = completedTask.artifacts.find(
+      (artifact) => artifact.label === 'Auditoria de fuentes'
+    );
+    const evidenceArtifact = completedTask.artifacts.find(
+      (artifact) => artifact.label === 'Evidencia extraida'
+    );
 
     const reportContents = await fs.readFile(reportArtifact!.filePath!, 'utf8');
     const summaryContents = await fs.readFile(summaryArtifact!.filePath!, 'utf8');
+    const sourcesContents = await fs.readFile(sourcesArtifact!.filePath!, 'utf8');
+    const evidenceContents = await fs.readFile(evidenceArtifact!.filePath!, 'utf8');
 
     expect(reportContents).toContain('# Informe de trabajo');
+    expect(reportContents).toContain('## Limites de evidencia');
+    expect(reportContents).toContain('https://statice.is/example');
     expect(summaryContents).toContain('Objetivo: Preparar informe semanal');
+    expect(JSON.parse(sourcesContents)).toMatchObject({
+      query: 'Preparar informe semanal',
+      providerId: 'mock-search'
+    });
+    expect(JSON.parse(sourcesContents).selectedSources).toHaveLength(2);
+    expect(JSON.parse(sourcesContents).discardedSources[0].selectionReason).toBe(
+      'duplicate_url'
+    );
+    expect(JSON.parse(sourcesContents).pagesFetched).toHaveLength(2);
+    expect(JSON.parse(evidenceContents).evidence).toHaveLength(2);
+    expect(JSON.parse(evidenceContents).evidence[0]).toMatchObject({
+      basis: 'page_content',
+      evidenceLevel: 'page_read'
+    });
     expect(completedTask.metadata?.runtimeModelInvocation).toMatchObject({
       providerId: 'demo-local',
       model: 'demo-local-heuristic'
@@ -447,12 +607,229 @@ describe('TaskRuntimeExecutor', () => {
     expect(completedTask.progressPercent).toBe(100);
   });
 
+  it('degrades to snippet-only research when page fetch is disabled', async () => {
+    const harness = await createRuntimeHarness(
+      undefined,
+      undefined,
+      undefined,
+      { researchPageFetchEnabled: false }
+    );
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'research_report_basic',
+      objective: 'Preparar informe sin lectura de paginas'
+    });
+
+    const completedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'completed'
+    );
+    const research = completedTask.metadata?.research as
+      | {
+          evidenceLevel?: string;
+          pagesFetched?: unknown[];
+          sourcesSelected?: Array<{ evidenceLevel?: string }>;
+          limitations?: string[];
+        }
+      | undefined;
+
+    expect(research?.evidenceLevel).toBe('snippet_only');
+    expect(research?.pagesFetched).toHaveLength(0);
+    expect(research?.sourcesSelected?.[0]?.evidenceLevel).toBe('snippet_only');
+    expect(research?.limitations?.join(' ')).toContain('snippets');
+  });
+
+  it('does not upgrade snippet-only evidence to strong by default', async () => {
+    const harness = await createRuntimeHarness(
+      undefined,
+      undefined,
+      undefined,
+      { researchPageFetchEnabled: false }
+    );
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'research_report_basic',
+      objective: 'Preparar informe solo con snippets'
+    });
+
+    const completedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'completed'
+    );
+    const research = completedTask.metadata?.research as
+      | {
+          evidenceStrength?: string;
+          evidence?: Array<{ evidenceStrength?: string; basis?: string }>;
+        }
+      | undefined;
+
+    expect(research?.evidenceStrength).toBe('medium');
+    expect(
+      research?.evidence?.every((record) => record.evidenceStrength !== 'strong')
+    ).toBe(true);
+    expect(
+      research?.evidence?.every((record) => record.basis === 'snippet')
+    ).toBe(true);
+  });
+
+  it('keeps low-quality page reads out of strong evidence', async () => {
+    const harness = await createRuntimeHarness(
+      undefined,
+      undefined,
+      {
+        readQuality: 'low',
+        qualityScore: 0.29,
+        qualityNotes: ['technical_noise_detected', 'low_quality_extraction']
+      }
+    );
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'research_report_basic',
+      objective: 'Preparar informe con paginas ruidosas'
+    });
+
+    const completedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'completed'
+    );
+    const research = completedTask.metadata?.research as
+      | {
+          evidenceStrength?: string;
+          evidence?: Array<{ evidenceStrength?: string }>;
+          limitations?: string[];
+        }
+      | undefined;
+
+    expect(research?.evidenceStrength).toBe('weak');
+    expect(
+      research?.evidence?.some((record) => record.evidenceStrength === 'strong')
+    ).toBe(false);
+    expect(research?.limitations?.join(' ')).toContain('calidad baja');
+  });
+
+  it('limits page reads to the configured maximum while keeping selected sources auditable', async () => {
+    const results = Array.from({ length: 6 }, (_item, index) => ({
+      title: `Fuente ${index + 1}`,
+      url: `https://example${index + 1}.org/research`,
+      snippet: `Snippet util ${index + 1} con suficiente contexto para la investigacion.`,
+      retrievedAt: new Date().toISOString()
+    }));
+    const harness = await createRuntimeHarness(
+      undefined,
+      {
+        providerId: 'mock-search',
+        query: 'limite fuentes',
+        retrievedAt: new Date().toISOString(),
+        results
+      },
+      undefined,
+      { researchPageFetchMaxSources: 3 }
+    );
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'research_report_basic',
+      objective: 'Preparar informe sobre limite de fuentes'
+    });
+
+    const completedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'completed'
+    );
+    const research = completedTask.metadata?.research as
+      | {
+          pagesFetched?: unknown[];
+          sourcesSelected?: Array<{ evidenceLevel?: string }>;
+        }
+      | undefined;
+
+    expect(research?.sourcesSelected).toHaveLength(6);
+    expect(research?.pagesFetched).toHaveLength(3);
+    expect(
+      research?.sourcesSelected?.filter((source) => source.evidenceLevel === 'page_read')
+    ).toHaveLength(3);
+  });
+
+  it('fails research clearly when web search throws and does not write empty reports', async () => {
+    const harness = await createRuntimeHarness(
+      undefined,
+      new Error('Brave Search timed out after 10000ms.')
+    );
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'research_report_basic',
+      objective: 'Preparar informe sobre galletas'
+    });
+
+    const failedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'failed'
+    );
+
+    expect(failedTask.metadata?.research).toMatchObject({
+      searchError: 'Brave Search timed out after 10000ms.',
+      sourcesSelected: []
+    });
+    expect(failedTask.artifacts.map((artifact) => artifact.label)).not.toContain(
+      'Informe principal'
+    );
+    expect(harness.events.map((event) => event.type)).toContain('research_failed');
+  });
+
+  it('does not generate report artifacts when no useful sources are selected', async () => {
+    const harness = await createRuntimeHarness(undefined, {
+      providerId: 'mock-search',
+      query: 'sin fuentes',
+      retrievedAt: new Date().toISOString(),
+      results: [
+        {
+          title: 'Invalid source',
+          url: 'not-a-url',
+          snippet: 'Broken result',
+          retrievedAt: new Date().toISOString()
+        }
+      ]
+    });
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'research_report_basic',
+      objective: 'Preparar informe sobre un tema sin fuentes'
+    });
+
+    const failedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'failed'
+    );
+
+    const research = failedTask.metadata?.research as
+      | { sourcesSelected?: unknown[]; sourcesDiscarded?: Array<{ selectionReason?: string }> }
+      | undefined;
+    expect(research?.sourcesSelected).toHaveLength(0);
+    expect(research?.sourcesDiscarded?.[0]?.selectionReason).toBe('invalid_url');
+    expect(failedTask.artifacts.map((artifact) => artifact.label)).not.toContain(
+      'Informe principal'
+    );
+  });
+
   it('uses a persisted planner-generated plan before starting the runtime task', async () => {
     const harness = await createRuntimeHarness();
     const planner = new DeterministicTaskPlanner();
     const planResult = planner.createPlan({
       session: harness.session,
-      text: 'hazme un informe sobre costes operativos'
+      text: 'hazme un informe sobre costes operativos',
+      webSearchAvailable: true,
+      privacyAllowsWebSearch: true
     });
     expect(planResult.accepted).toBe(true);
     expect(planResult.plan).toBeTruthy();
@@ -467,9 +844,15 @@ describe('TaskRuntimeExecutor', () => {
 
     expect(task.plan?.steps.map((step) => step.id)).toEqual([
       'prepare-workspace',
-      'draft-report',
+      'search-web',
+      'select-sources',
+      'fetch-pages',
+      'extract-evidence',
+      'synthesize-findings',
       'write-report',
-      'write-summary'
+      'write-summary',
+      'write-sources',
+      'write-evidence'
     ]);
     expect(task.steps.map((step) => step.id)).toEqual(task.plan?.steps.map((step) => step.id));
 
@@ -692,9 +1075,9 @@ describe('TaskRuntimeExecutor', () => {
       objective: 'Recuperar tarea tras reinicio',
       ...blueprint,
       status: 'active',
-      currentPhase: 'Generar borrador del informe',
+      currentPhase: 'Sintetizar hallazgos',
       progressPercent: 25,
-      currentStepId: 'draft-report'
+      currentStepId: 'synthesize-findings'
     });
 
     const runtime = new TaskRuntimeExecutor({

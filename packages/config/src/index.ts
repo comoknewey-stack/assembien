@@ -31,6 +31,20 @@ const DEFAULT_WHISPER_CPP_THREADS = Math.max(2, Math.min(8, Math.floor(os.cpus()
 const DEFAULT_WHISPER_CPP_BEAM_SIZE = 5;
 const DEFAULT_WHISPER_CPP_INITIAL_PROMPT =
   'ASSEM. Comandos frecuentes en espanol: que hora es, hora actual, fecha actual, crear archivo, crear carpeta, lista el sandbox, lee el archivo, confirma, cancela, Ollama, whisper.cpp.';
+const DEFAULT_WEB_SEARCH_PROVIDER = '';
+const DEFAULT_WEB_SEARCH_ENDPOINT = 'https://api.search.brave.com/res/v1/web/search';
+const DEFAULT_WEB_SEARCH_MAX_RESULTS = 5;
+const MAX_WEB_SEARCH_RESULTS = 10;
+const DEFAULT_WEB_SEARCH_TIMEOUT_MS = 10_000;
+const DEFAULT_WEB_PAGE_FETCH_ENABLED = true;
+const DEFAULT_WEB_PAGE_FETCH_TIMEOUT_MS = 12_000;
+const DEFAULT_WEB_PAGE_MAX_SOURCES = 3;
+const MAX_WEB_PAGE_SOURCES = 5;
+const DEFAULT_WEB_PAGE_MAX_CONTENT_CHARS = 20_000;
+const MAX_WEB_PAGE_CONTENT_CHARS = 50_000;
+const DEFAULT_WEB_PAGE_MIN_TEXT_CHARS = 220;
+const DEFAULT_WEB_PAGE_MIN_TEXT_DENSITY = 0.18;
+const DEFAULT_WEB_PAGE_MAX_LINK_DENSITY = 0.55;
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:1420',
   'http://127.0.0.1:1420',
@@ -145,6 +159,15 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parsePositiveFloat(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseFloat(value ?? '');
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clampInteger(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function resolveOptionalPath(value: string | undefined): string | undefined {
@@ -288,6 +311,99 @@ export function createAssemConfig(
       parsePositiveInteger(
         process.env.ASSEM_WHISPER_CPP_BEAM_SIZE,
         DEFAULT_WHISPER_CPP_BEAM_SIZE
+      ),
+    webSearchProvider:
+      overrides.webSearchProvider ??
+      process.env.ASSEM_WEB_SEARCH_PROVIDER ??
+      DEFAULT_WEB_SEARCH_PROVIDER,
+    webSearchApiKey:
+      overrides.webSearchApiKey ??
+      (process.env.ASSEM_WEB_SEARCH_API_KEY?.trim() || undefined),
+    webSearchEndpoint:
+      overrides.webSearchEndpoint ??
+      (process.env.ASSEM_WEB_SEARCH_ENDPOINT?.trim() ||
+        DEFAULT_WEB_SEARCH_ENDPOINT),
+    webSearchMaxResults:
+      clampInteger(
+        overrides.webSearchMaxResults ??
+          parsePositiveInteger(
+            process.env.ASSEM_WEB_SEARCH_MAX_RESULTS,
+            DEFAULT_WEB_SEARCH_MAX_RESULTS
+          ),
+        1,
+        MAX_WEB_SEARCH_RESULTS
+      ),
+    webSearchTimeoutMs:
+      overrides.webSearchTimeoutMs ??
+      parsePositiveInteger(
+        process.env.ASSEM_WEB_SEARCH_TIMEOUT_MS,
+        DEFAULT_WEB_SEARCH_TIMEOUT_MS
+      ),
+    webPageFetchEnabled:
+      overrides.webPageFetchEnabled ??
+      parseBoolean(
+        process.env.ASSEM_WEB_PAGE_FETCH_ENABLED,
+        DEFAULT_WEB_PAGE_FETCH_ENABLED
+      ),
+    webPageFetchTimeoutMs:
+      overrides.webPageFetchTimeoutMs ??
+      parsePositiveInteger(
+        process.env.ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS,
+        DEFAULT_WEB_PAGE_FETCH_TIMEOUT_MS
+      ),
+    webPageMaxSources:
+      clampInteger(
+        overrides.webPageMaxSources ??
+          parsePositiveInteger(
+            process.env.ASSEM_WEB_PAGE_MAX_SOURCES,
+            DEFAULT_WEB_PAGE_MAX_SOURCES
+          ),
+        0,
+        MAX_WEB_PAGE_SOURCES
+      ),
+    webPageMaxContentChars:
+      clampInteger(
+        overrides.webPageMaxContentChars ??
+          parsePositiveInteger(
+            process.env.ASSEM_WEB_PAGE_MAX_CONTENT_CHARS,
+            DEFAULT_WEB_PAGE_MAX_CONTENT_CHARS
+          ),
+        1_000,
+        MAX_WEB_PAGE_CONTENT_CHARS
+      ),
+    webPageMinTextChars:
+      overrides.webPageMinTextChars ??
+      clampInteger(
+        parsePositiveInteger(
+          process.env.ASSEM_WEB_PAGE_MIN_TEXT_CHARS,
+          DEFAULT_WEB_PAGE_MIN_TEXT_CHARS
+        ),
+        80,
+        5_000
+      ),
+    webPageMinTextDensity:
+      overrides.webPageMinTextDensity ??
+      Math.max(
+        0.05,
+        Math.min(
+          1,
+          parsePositiveFloat(
+            process.env.ASSEM_WEB_PAGE_MIN_TEXT_DENSITY,
+            DEFAULT_WEB_PAGE_MIN_TEXT_DENSITY
+          )
+        )
+      ),
+    webPageMaxLinkDensity:
+      overrides.webPageMaxLinkDensity ??
+      Math.max(
+        0.05,
+        Math.min(
+          1,
+          parsePositiveFloat(
+            process.env.ASSEM_WEB_PAGE_MAX_LINK_DENSITY,
+            DEFAULT_WEB_PAGE_MAX_LINK_DENSITY
+          )
+        )
       ),
     allowedOrigins:
       overrides.allowedOrigins ??

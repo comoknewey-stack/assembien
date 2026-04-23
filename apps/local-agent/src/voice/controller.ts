@@ -397,7 +397,7 @@ export class VoiceCoordinator {
     const sessionState = this.resolveSessionState(request.sessionId);
     const enabled = Boolean(request.enabled);
 
-    if (!enabled && this.activeRecording?.sessionId === request.sessionId) {
+    if (this.activeRecording?.sessionId === request.sessionId) {
       await this.activeRecording.handle.cancel().catch(() => undefined);
       this.activeRecording = null;
       sessionState.recordingState = 'idle';
@@ -417,6 +417,9 @@ export class VoiceCoordinator {
       settings: createPersistedVoiceSettings(this.settings)
     });
 
+    sessionState.recordingState = 'idle';
+    sessionState.activeListeningStartedAt = undefined;
+    sessionState.audioDurationMs = undefined;
     sessionState.micMuted = this.settings.micMuted;
     sessionState.wakeModeEnabled = enabled && this.settings.wakeWordEnabled;
     sessionState.voiceModeState = resolveIdleVoiceModeState(this.settings);

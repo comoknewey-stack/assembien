@@ -132,6 +132,104 @@ describe('DeterministicTaskInterruptHandler', () => {
     });
   });
 
+  it('classifies source status queries for research tasks', () => {
+    const result = handler.classify({
+      text: 'que fuentes has encontrado',
+      session: createSession(),
+      activeTask: createTask()
+    });
+
+    expect(result.kind).toBe('task_status_query');
+    expect(result.statusQueryKind).toBe('sources');
+  });
+
+  it('classifies read/snippet/discarded/evidence source queries deterministically', () => {
+    const read = handler.classify({
+      text: 'que fuentes has leido de verdad',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const snippet = handler.classify({
+      text: 'que fuentes usaste solo como snippet',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const discarded = handler.classify({
+      text: 'que fuentes descartaste',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const evidence = handler.classify({
+      text: 'que evidencia tienes',
+      session: createSession(),
+      activeTask: createTask()
+    });
+
+    expect(read.statusQueryKind).toBe('read_sources');
+    expect(snippet.statusQueryKind).toBe('snippet_sources');
+    expect(discarded.statusQueryKind).toBe('discarded_sources');
+    expect(evidence.statusQueryKind).toBe('evidence');
+  });
+
+  it('classifies evidence-strength and limitations queries deterministically', () => {
+    const strong = handler.classify({
+      text: 'que fuentes tienen evidencia fuerte',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const weak = handler.classify({
+      text: 'que fuentes son debiles o tangenciales',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const best = handler.classify({
+      text: 'cual es la mejor fuente que encontraste',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const limitations = handler.classify({
+      text: 'que limitaciones tiene este informe',
+      session: createSession(),
+      activeTask: createTask()
+    });
+
+    expect(strong.statusQueryKind).toBe('strong_sources');
+    expect(weak.statusQueryKind).toBe('weak_sources');
+    expect(best.statusQueryKind).toBe('best_source');
+    expect(limitations.statusQueryKind).toBe('report_limitations');
+  });
+
+  it('classifies source refinements for research tasks', () => {
+    const official = handler.classify({
+      text: 'usa fuentes oficiales',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const noBlogs = handler.classify({
+      text: 'no uses blogs',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const recent = handler.classify({
+      text: 'prioriza fuentes recientes',
+      session: createSession(),
+      activeTask: createTask()
+    });
+
+    expect(official.refinement).toMatchObject({
+      type: 'source_preference',
+      value: 'official'
+    });
+    expect(noBlogs.refinement).toMatchObject({
+      type: 'source_exclusion',
+      value: 'blogs'
+    });
+    expect(recent.refinement).toMatchObject({
+      type: 'recency',
+      value: 'recent'
+    });
+  });
+
   it('asks for clarification when the goal correction is too vague', () => {
     const result = handler.classify({
       text: 'eso no era lo que quería',

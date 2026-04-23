@@ -19,6 +19,20 @@ Base URL: `http://localhost:4318`
       - fallback used
       - fallback reason
       - Ollama availability/error
+    - web search runtime:
+      - provider id
+      - configured/available
+      - effective max result limit
+      - endpoint
+      - whether current privacy mode allows web
+      - last provider error if present
+    - web page reader runtime:
+      - provider id
+      - enabled/available
+      - effective page-read limit
+      - fetch timeout
+      - whether current privacy mode allows web
+      - last provider error if present
     - task manager:
       - active task for the requested session
       - persisted tasks visible to that session scope
@@ -305,9 +319,22 @@ Runtime note:
 - current planner-supported task type: `research_report_basic`
 - the runtime currently executes real phases:
   - prepare workspace
-  - generate report draft
+  - search web sources
+  - select useful sources
+  - read a bounded subset of selected pages when enabled
+  - extract evidence from snippets and/or page reads
+  - synthesize findings from persisted evidence
   - write `report.md`
   - write `summary.txt`
+  - write `sources.json`
+- write `evidence.json`
+- Research v2 uses Brave Search when configured and policy allows web access
+- Research v2 can read a very small number of selected public HTML pages through the page-reader integration when enabled
+- `local_only` blocks Research v2 before creating a task
+- if search fails or times out, the task fails with `metadata.research.searchError` and no empty report artifacts are written
+- if no source can be selected, the task fails without `report.md` or `summary.txt`
+- if no usable persisted evidence exists after selection/fetch, the task fails and does not invent a report
+- source questions such as `que fuentes has encontrado`, `que fuentes has leido de verdad`, `que fuentes usaste solo como snippet`, `que evidencia tienes` and `que fuentes descartaste` are answered from persisted task metadata with title, domain and URL
 - `GET /api/tasks/:taskId/plan` returns the persisted `TaskPlan` associated with that task
 - the plan is stored with the task and includes:
   - task type
@@ -401,7 +428,7 @@ Task creation example:
 
 - `GET /api/telemetry?limit=20`
 - each record includes:
-  - telemetry channel (`chat`, `voice_capture`, `voice_stt`, `voice_tts`, `task_manager`, `task_runtime`, `task_planner`, `task_interrupt`)
+  - telemetry channel (`chat`, `research`, `voice_capture`, `voice_stt`, `voice_tts`, `task_manager`, `task_runtime`, `task_planner`, `task_interrupt`)
   - provider id
   - model
   - fallback used
@@ -417,11 +444,25 @@ Task creation example:
     - `task_interrupt_refinement`
     - `task_interrupt_clarification`
     - `task_interrupt_independent_query`
+    - `task_interrupt_sources_query`
   - task planner event types when applicable:
     - `task_plan_created`
     - `task_plan_refined`
     - `task_plan_rejected`
     - `task_plan_applied`
+- research event types when applicable:
+  - `research_started`
+  - `research_search_started`
+  - `research_search_completed`
+  - `research_sources_selected`
+  - `research_page_fetch_started`
+  - `research_page_fetch_completed`
+  - `research_page_fetch_failed`
+  - `research_evidence_extracted`
+  - `research_evidence_saved`
+  - `research_synthesis_started`
+  - `research_report_written`
+  - `research_failed`
 
 ## Security Notes
 
@@ -429,3 +470,4 @@ Task creation example:
 - Errors are sanitized before being returned.
 - The local file tool refuses path traversal and any path outside the sandbox root.
 - Writes stay inside the sandbox root even in `live` mode.
+- The web page reader accepts only safe public `http`/`https` targets, rejects private/local destinations and treats fetched page text as untrusted evidence instead of instructions.

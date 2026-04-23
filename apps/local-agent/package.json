@@ -13,6 +13,7 @@
     "@assem/integration-calendar": "0.1.0",
     "@assem/integration-clock-time": "0.1.0",
     "@assem/integration-local-files": "0.1.0",
+    "@assem/integration-web-search": "0.1.0",
     "@assem/memory": "0.1.0",
     "@assem/model-router": "0.1.0",
     "@assem/orchestrator": "0.1.0",

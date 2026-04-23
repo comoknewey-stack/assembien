@@ -53,7 +53,8 @@ import type {
   ToolExecutionResult,
   ProviderHealth,
   ModelRouter as ModelRouterContract,
-  PolicyEngine as PolicyEngineContract
+  PolicyEngine as PolicyEngineContract,
+  WebSearchProvider
 } from '@assem/shared-types';
 
 import { ActionLogService } from '@assem/action-log';
@@ -154,8 +155,30 @@ function formatListEntries(entries: LocalDirectoryEntry[]): string {
 
 function isAffirmative(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /^(?:yes|y|si|confirm|confirma|confirmar|confirmo|confirmo todo|confirmo la accion|confirmo todas? las acciones? pendientes|la confirmo|confirmala|ok|okay|dale|hazlo|adelante|vale|de acuerdo|do it|go ahead|crealo|creala|crea la|crea lo)(?:\s+(?:please|por favor))?$/.test(
-    normalized
+
+  const cleaned = normalized
+    .replace(/\b(?:por favor|please)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (
+    /^(?:yes|y|si|ok|okay|dale|hazlo|adelante|vale|de acuerdo|do it|go ahead|crealo|creala|crea la|crea lo)$/.test(
+      cleaned
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /^(?:(?:yo\s+)?(?:lo|la|los|las)\s+)?(?:confirmo|confirmar|confirma|confirm|approve|approved)(?:\s+(?:todo|todas? las acciones? pendientes|la accion|esta accion|accion pendiente|it|all))?(?:\s+(?:y\s+)?(?:hazlo|adelante|dale|ok|vale|do it|go ahead))*$/.test(
+      cleaned
+    )
+  ) {
+    return true;
+  }
+
+  return /^(?:confirmala|confirmalo|confirmalas|confirmalos|la confirmo|lo confirmo|las confirmo|los confirmo)$/.test(
+    cleaned
   );
 }
 
@@ -176,6 +199,12 @@ function resolvePendingActionIntent(text: string): 'approve' | 'reject' | null {
   }
 
   return null;
+}
+
+function isActivePendingAction(
+  action: PendingAction | null | undefined
+): action is PendingAction {
+  return action?.status === 'pending';
 }
 
 function isTimeRequest(text: string): boolean {
@@ -259,8 +288,15 @@ function isReportTaskRequest(text: string): boolean {
   );
 }
 
+function isResearchTaskRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /(?:investiga|busca informacion sobre|busca datos sobre|haz\s+un\s+estudio|hazme\s+un\s+estudio|haz\s+un\s+analisis|research|investigate|search for information about)/i.test(
+    normalized
+  );
+}
+
 function isTaskPlanningRequest(text: string): boolean {
-  return isTaskCreateRequest(text) || isReportTaskRequest(text);
+  return isTaskCreateRequest(text) || isReportTaskRequest(text) || isResearchTaskRequest(text);
 }
 
 function isTaskPlanRequest(text: string): boolean {
@@ -299,7 +335,7 @@ function extractTaskObjective(text: string): string | null {
 
 function isTaskStatusRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /^(?:que estas haciendo|que estas haciendo ahora|en que estas|what are you doing|what are you doing now)$/.test(
+  return /^(?:que estas haciendo|que estas haciendo ahora|en que estas|como va|como va la tarea|como va el informe|que tal va|que tal va la tarea|estado de la tarea|estado del informe|what are you doing|what are you doing now|how is it going|how is the task going)$/.test(
     normalized
   );
 }
@@ -314,6 +350,20 @@ function isTaskProgressRequest(text: string): boolean {
 function isTaskStepRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
   return /^(?:en que vas|en que paso vas|que paso llevas|what step are you on|what step are you at)$/.test(
+    normalized
+  );
+}
+
+function isTaskCompletionRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:ya esta|ya esta listo|esta listo|ya terminaste|ya has terminado|has terminado|ha terminado|termino|are you done|is it ready|did you finish)$/.test(
+    normalized
+  );
+}
+
+function isTaskStateArtifactRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return /^(?:donde esta el informe|donde esta el reporte|donde quedo el informe|donde guardaste el informe|donde se guardo el informe|ruta del informe|donde esta report md|que fuentes has encontrado|que fuentes encontraste|que fuentes estas usando|cuantas fuentes tienes|fuentes encontradas|que fuentes has leido de verdad|que paginas has podido leer|que paginas leiste|fuentes leidas|paginas leidas|que fuentes tienen evidencia fuerte|que fuentes son fuertes|cual es la mejor fuente|cual es la mejor fuente que encontraste|que fuentes son debiles o tangenciales|que fuentes son debiles|que fuentes son tangenciales|que limitaciones tiene este informe|que limitaciones tiene la investigacion|cuales son las limitaciones|que fuentes usaste solo como snippet|fuentes solo snippet|que fuentes son solo snippet|que fuentes descartaste|por que descartaste esa fuente|fuentes descartadas|que evidencia tienes|que evidencia has extraido|evidencia disponible|que artefactos se han generado|que artefactos generaste|que archivos has generado|que archivos generaste|artefactos generados|donde esta la carpeta|donde esta el workspace|donde esta la carpeta de trabajo|ruta de la carpeta|ruta del workspace|workspace|por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|where is the report|what sources have you found|what sources are you using|how many sources do you have|what sources did you actually read|what pages could you read|what pages did you read|what sources have strong evidence|which sources are strong|what is the best source|what is the best source you found|what sources are weak or tangential|what limitations does this report have|what are the limitations|what sources are snippet only|which sources are snippet only|what sources did you discard|why did you discard that source|discarded sources|what evidence do you have|what evidence did you extract|what artifacts were generated|where is the workspace|why did it fail|what happened|what was the error)$/.test(
     normalized
   );
 }
@@ -971,6 +1021,7 @@ export interface AssemOrchestratorDeps {
   taskRuntime: TaskRuntimeContract;
   interruptHandler?: TaskInterruptHandlerContract;
   planner?: TaskPlannerContract;
+  webSearchProvider?: WebSearchProvider;
 }
 
 export class AssemOrchestrator {
@@ -983,6 +1034,10 @@ export class AssemOrchestrator {
     this.planner = deps.planner ?? new DeterministicTaskPlanner();
   }
 
+  private isWebSearchConfigured(): boolean {
+    return this.deps.webSearchProvider?.getStatus().configured ?? false;
+  }
+
   async createSession(): Promise<SessionSnapshot> {
     const session = await this.deps.sessionStore.createSession();
     await this.deps.sessionStore.saveSession(session);
@@ -991,7 +1046,15 @@ export class AssemOrchestrator {
 
   async getSessionSnapshot(sessionId: string): Promise<SessionSnapshot | null> {
     const session = await this.deps.sessionStore.getSession(sessionId);
-    return session ? this.snapshot(session) : null;
+    if (!session) {
+      return null;
+    }
+
+    if (this.clearInactivePendingAction(session)) {
+      await this.deps.sessionStore.saveSession(session);
+    }
+
+    return this.snapshot(session);
   }
 
   async listActionLog(sessionId: string): Promise<ActionLogEntry[]> {
@@ -1001,7 +1064,11 @@ export class AssemOrchestrator {
 
   async listPendingActions(sessionId: string): Promise<PendingAction[]> {
     const session = await this.requireSession(sessionId);
-    return session.pendingAction ? [session.pendingAction] : [];
+    if (this.clearInactivePendingAction(session)) {
+      await this.deps.sessionStore.saveSession(session);
+    }
+
+    return isActivePendingAction(session.pendingAction) ? [session.pendingAction] : [];
   }
 
   async getMode(sessionId: string): Promise<ActiveMode> {
@@ -1089,6 +1156,7 @@ export class AssemOrchestrator {
 
   async handleChat(request: ChatRequest): Promise<SessionSnapshot> {
     const session = await this.deps.sessionStore.getOrCreateSession(request.sessionId);
+    this.clearInactivePendingAction(session);
     const trace: InteractionTrace = {
       startedAt: Date.now(),
       messagePreview: summarizeMessage(request.text ?? ''),
@@ -1122,7 +1190,11 @@ export class AssemOrchestrator {
 
       const pendingActionIntent = resolvePendingActionIntent(text);
 
-      if (session.pendingAction) {
+      const activePendingAction = isActivePendingAction(session.pendingAction)
+        ? session.pendingAction
+        : null;
+
+      if (activePendingAction) {
         if (pendingActionIntent === 'approve') {
           return await this.resolvePendingAction({
             sessionId: session.sessionId,
@@ -1408,7 +1480,10 @@ export class AssemOrchestrator {
     request: PendingActionResolutionRequest
   ): Promise<SessionSnapshot> {
     const session = await this.requireSession(request.sessionId);
-    const pendingAction = session.pendingAction;
+    this.clearInactivePendingAction(session);
+    const pendingAction = isActivePendingAction(session.pendingAction)
+      ? session.pendingAction
+      : null;
     const trace: InteractionTrace = {
       startedAt: Date.now(),
       messagePreview: request.approved ? 'pending-action:approved' : 'pending-action:rejected',
@@ -1625,6 +1700,15 @@ export class AssemOrchestrator {
     }
   }
 
+  private clearInactivePendingAction(session: SessionState): boolean {
+    if (!session.pendingAction || isActivePendingAction(session.pendingAction)) {
+      return false;
+    }
+
+    session.pendingAction = null;
+    return true;
+  }
+
   private async executeTool(
     tool: ToolDefinition,
     session: SessionState,
@@ -1648,7 +1732,9 @@ export class AssemOrchestrator {
       updatedAt: session.updatedAt,
       messages: session.messages,
       actionLog: session.actionLog,
-      pendingAction: session.pendingAction,
+      pendingAction: isActivePendingAction(session.pendingAction)
+        ? session.pendingAction
+        : null,
       temporaryOverrides: session.temporaryOverrides,
       calendarEvents: session.calendarEvents,
       activeMode: session.activeMode,
@@ -1802,23 +1888,32 @@ export class AssemOrchestrator {
     const activeTask = await this.deps.taskManager.getActiveTaskForSession(
       session.sessionId
     );
+    const task =
+      activeTask ?? (await this.getMostRecentTaskForSession(session.sessionId));
 
-    if (!activeTask) {
+    if (!task) {
       return null;
     }
 
     const classification = this.interruptHandler.classify({
       text,
       session,
-      activeTask
+      activeTask: task
     });
     const language = this.resolveConversationLanguage(session, text);
 
-    await this.recordTaskInterruptTelemetry(session, activeTask, classification);
-
     if (classification.kind === 'independent_query') {
+      if (activeTask) {
+        await this.recordTaskInterruptTelemetry(session, task, classification);
+      }
       return null;
     }
+
+    if (!activeTask && !this.shouldHandleRecentTaskInterrupt(classification)) {
+      return null;
+    }
+
+    await this.recordTaskInterruptTelemetry(session, task, classification);
 
     trace.providerId = 'tool-only';
     trace.model = 'tool-only';
@@ -1828,23 +1923,44 @@ export class AssemOrchestrator {
       const snapshot = await this.reply(
         session,
         this.renderInterruptStatusQuery(
-          activeTask,
+          task,
           classification.statusQueryKind ?? 'status',
           language
         ),
         'system',
         'info',
-        language === 'es' ? 'Estado de tarea activa' : 'Active task status'
+        activeTask
+          ? language === 'es' ? 'Estado de tarea activa' : 'Active task status'
+          : language === 'es' ? 'Estado de tarea reciente' : 'Recent task status'
+      );
+      await this.recordTelemetry(session, trace);
+      return snapshot;
+    }
+
+    if (
+      !activeTask &&
+      classification.kind !== 'task_output_refinement' &&
+      classification.kind !== 'task_goal_refinement' &&
+      classification.kind !== 'task_clarification_needed'
+    ) {
+      const snapshot = await this.reply(
+        session,
+        this.renderFinishedTaskCannotBeChanged(task, language),
+        'system',
+        'info',
+        language === 'es'
+          ? 'Tarea reciente no modificable'
+          : 'Recent task cannot be changed'
       );
       await this.recordTelemetry(session, trace);
       return snapshot;
     }
 
     if (classification.kind === 'task_pause') {
-      if (activeTask.status === 'paused') {
+      if (task.status === 'paused') {
         const snapshot = await this.reply(
           session,
-          this.renderTaskAlreadyPaused(activeTask, language),
+          this.renderTaskAlreadyPaused(task, language),
           'system',
           'info',
           language === 'es' ? 'Tarea ya pausada' : 'Task already paused'
@@ -1854,7 +1970,7 @@ export class AssemOrchestrator {
       }
 
       const pausedTask = await this.deps.taskRuntime.pauseTask(
-        activeTask.id,
+        task.id,
         language === 'es'
           ? 'Pausada desde una interrupcion de la conversacion.'
           : 'Paused from a conversation interrupt.'
@@ -1871,10 +1987,10 @@ export class AssemOrchestrator {
     }
 
     if (classification.kind === 'task_resume') {
-      if (activeTask.status === 'active') {
+      if (task.status === 'active') {
         const snapshot = await this.reply(
           session,
-          this.renderTaskAlreadyActive(activeTask, language),
+          this.renderTaskAlreadyActive(task, language),
           'system',
           'info',
           language === 'es' ? 'Tarea ya activa' : 'Task already active'
@@ -1883,7 +1999,7 @@ export class AssemOrchestrator {
         return snapshot;
       }
 
-      const resumedTask = await this.deps.taskRuntime.resumeTask(activeTask.id);
+      const resumedTask = await this.deps.taskRuntime.resumeTask(task.id);
       const snapshot = await this.reply(
         session,
         this.renderTaskResumed(resumedTask, language),
@@ -1897,7 +2013,7 @@ export class AssemOrchestrator {
 
     if (classification.kind === 'task_cancel') {
       const cancelledTask = await this.deps.taskRuntime.cancelTask(
-        activeTask.id,
+        task.id,
         language === 'es'
           ? 'Cancelada desde una interrupcion de la conversacion.'
           : 'Cancelled from a conversation interrupt.'
@@ -1932,14 +2048,28 @@ export class AssemOrchestrator {
         return snapshot;
       }
 
+      if (this.shouldRejectTaskRefinement(task)) {
+        const snapshot = await this.reply(
+          session,
+          this.renderTaskRefinementRejected(task, refinementDraft, language),
+          'system',
+          'info',
+          language === 'es'
+            ? 'Refinamiento no aplicado'
+            : 'Refinement not applied'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
       const refinement = this.createTaskRefinement(refinementDraft);
-      const planningResult = this.planner.refinePlan(activeTask, refinement);
+      const planningResult = this.planner.refinePlan(task, refinement);
 
       if (!planningResult.accepted || !planningResult.plan) {
         await this.recordTaskPlanTelemetry(
           session,
-          activeTask.id,
-          activeTask.plan,
+          task.id,
+          task.plan,
           'task_plan_rejected',
           'rejected',
           planningResult.clarificationMessage ?? planningResult.reason
@@ -1961,7 +2091,7 @@ export class AssemOrchestrator {
       }
 
       const updatedTask = await this.persistTaskRefinement(
-        activeTask,
+        task,
         refinement,
         planningResult.plan
       );
@@ -1975,7 +2105,7 @@ export class AssemOrchestrator {
       );
       const snapshot = await this.reply(
         session,
-        this.renderTaskRefinementApplied(activeTask, updatedTask, refinement, language),
+        this.renderTaskRefinementApplied(task, updatedTask, refinement, language),
         'system',
         'completed',
         language === 'es'
@@ -1987,8 +2117,22 @@ export class AssemOrchestrator {
     }
 
     if (classification.kind === 'task_clarification_needed') {
+      if (this.isTerminalOrFailedTask(task)) {
+        const snapshot = await this.reply(
+          session,
+          this.renderFinishedTaskCannotBeChanged(task, language),
+          'system',
+          'info',
+          language === 'es'
+            ? 'Tarea reciente no modificable'
+            : 'Recent task cannot be changed'
+        );
+        await this.recordTelemetry(session, trace);
+        return snapshot;
+      }
+
       const updatedTask = await this.persistTaskClarification(
-        activeTask,
+        task,
         classification.clarificationMessage
       );
       const snapshot = await this.reply(
@@ -2008,6 +2152,35 @@ export class AssemOrchestrator {
     }
 
     return null;
+  }
+
+  private async getMostRecentTaskForSession(
+    sessionId: string
+  ): Promise<AssemTask | null> {
+    const tasks = await this.deps.taskManager.listTasks(sessionId);
+    return tasks[0] ?? null;
+  }
+
+  private shouldHandleRecentTaskInterrupt(
+    classification: TaskInterruptClassification
+  ): boolean {
+    return (
+      classification.kind === 'task_status_query' ||
+      classification.kind === 'task_output_refinement' ||
+      classification.kind === 'task_goal_refinement' ||
+      classification.kind === 'task_clarification_needed'
+    );
+  }
+
+  private isTerminalOrFailedTask(task: AssemTask): boolean {
+    return (
+      ['completed', 'failed', 'cancelled', 'blocked'].includes(task.status) ||
+      Boolean(this.getResearchSearchError(task))
+    );
+  }
+
+  private shouldRejectTaskRefinement(task: AssemTask): boolean {
+    return this.isTerminalOrFailedTask(task);
   }
 
   private resolveTaskInterruptState(task: AssemTask): TaskInterruptState {
@@ -2099,7 +2272,7 @@ export class AssemOrchestrator {
     task: AssemTask,
     classification: TaskInterruptClassification
   ): Promise<void> {
-    const eventType = this.mapTaskInterruptEventType(classification.kind);
+    const eventType = this.mapTaskInterruptEventType(classification);
     if (!eventType) {
       return;
     }
@@ -2159,9 +2332,26 @@ export class AssemOrchestrator {
   }
 
   private mapTaskInterruptEventType(
-    kind: TaskInterruptClassification['kind']
+    classification: TaskInterruptClassification
   ): TelemetryRecord['eventType'] | undefined {
-    switch (kind) {
+    if (
+      classification.kind === 'task_status_query' &&
+      [
+        'sources',
+        'read_sources',
+        'strong_sources',
+        'weak_sources',
+        'best_source',
+        'report_limitations',
+        'snippet_sources',
+        'discarded_sources',
+        'evidence'
+      ].includes(classification.statusQueryKind ?? '')
+    ) {
+      return 'task_interrupt_sources_query';
+    }
+
+    switch (classification.kind) {
       case 'task_status_query':
         return 'task_interrupt_status_query';
       case 'task_pause':
@@ -2186,6 +2376,155 @@ export class AssemOrchestrator {
     );
   }
 
+  private isResearchTask(task: AssemTask): boolean {
+    return (
+      task.plan?.taskType === 'research_report_basic' ||
+      task.metadata?.taskType === 'research_report_basic' ||
+      Boolean(task.metadata?.research)
+    );
+  }
+
+  private getResearchRecord(task: AssemTask): Record<string, unknown> | null {
+    const research = task.metadata?.research;
+    return research && typeof research === 'object'
+      ? (research as Record<string, unknown>)
+      : null;
+  }
+
+  private getResearchSearchError(task: AssemTask): string | undefined {
+    const searchError = this.getResearchRecord(task)?.searchError;
+    return typeof searchError === 'string' && searchError.trim()
+      ? searchError
+      : undefined;
+  }
+
+  private getResearchSources(
+    task: AssemTask,
+    key: 'sourcesFound' | 'sourcesSelected' | 'sourcesDiscarded'
+  ): Record<string, unknown>[] {
+    const value = this.getResearchRecord(task)?.[key];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (source): source is Record<string, unknown> =>
+        typeof source === 'object' && source !== null
+    );
+  }
+
+  private getResearchEvidence(task: AssemTask): Record<string, unknown>[] {
+    const value = this.getResearchRecord(task)?.evidence;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (record): record is Record<string, unknown> =>
+        typeof record === 'object' && record !== null
+    );
+  }
+
+  private getResearchLimitations(task: AssemTask): string[] {
+    const value = this.getResearchRecord(task)?.limitations;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0
+    );
+  }
+
+  private formatResearchSource(
+    source: Record<string, unknown>,
+    index: number
+  ): string {
+    const title =
+      typeof source.fetchedTitle === 'string' && source.fetchedTitle.trim()
+        ? source.fetchedTitle
+        : typeof source.title === 'string' && source.title.trim()
+          ? source.title
+          : `Fuente ${index + 1}`;
+    const domain =
+      typeof source.domain === 'string' && source.domain.trim()
+        ? source.domain
+        : 'dominio desconocido';
+    const url =
+      typeof source.finalUrl === 'string' && source.finalUrl.trim()
+        ? source.finalUrl
+        : typeof source.url === 'string'
+          ? source.url
+          : '';
+    return `${index + 1}. ${title} (${domain}) - ${url}`;
+  }
+
+  private formatResearchSourceWithEvidence(
+    source: Record<string, unknown>,
+    index: number
+  ): string {
+    const base = this.formatResearchSource(source, index);
+    const strength =
+      typeof source.evidenceStrength === 'string'
+        ? source.evidenceStrength
+        : 'insufficient';
+    const relevance =
+      typeof source.evidenceRelevance === 'string'
+        ? source.evidenceRelevance
+        : 'insufficient';
+    const quality =
+      typeof source.readQuality === 'string' ? source.readQuality : 'n/a';
+
+    return `${base} [strength: ${strength}; relevance: ${relevance}; read: ${quality}]`;
+  }
+
+  private hasTaskFailureGuardrail(task: AssemTask): boolean {
+    return (
+      task.status === 'failed' ||
+      task.status === 'blocked' ||
+      Boolean(this.getResearchSearchError(task))
+    );
+  }
+
+  private findReportArtifact(
+    task: AssemTask
+  ): AssemTask['artifacts'][number] | undefined {
+    return task.artifacts.find((artifact) => {
+      const filePath = artifact.filePath?.toLowerCase() ?? '';
+      return artifact.kind === 'report' || filePath.endsWith('/report.md') || filePath.endsWith('\\report.md');
+    });
+  }
+
+  private findSummaryArtifact(
+    task: AssemTask
+  ): AssemTask['artifacts'][number] | undefined {
+    return task.artifacts.find((artifact) => {
+      const filePath = artifact.filePath?.toLowerCase() ?? '';
+      return filePath.endsWith('/summary.txt') || filePath.endsWith('\\summary.txt');
+    });
+  }
+
+  private findSourcesArtifact(
+    task: AssemTask
+  ): AssemTask['artifacts'][number] | undefined {
+    return task.artifacts.find((artifact) => {
+      const filePath = artifact.filePath?.toLowerCase() ?? '';
+      const label = artifact.label.toLowerCase();
+      return (
+        filePath.endsWith('/sources.json') ||
+        filePath.endsWith('\\sources.json') ||
+        label.includes('fuentes') ||
+        label.includes('sources')
+      );
+    });
+  }
+
+  private findWorkspaceArtifact(
+    task: AssemTask
+  ): AssemTask['artifacts'][number] | undefined {
+    return task.artifacts.find((artifact) => artifact.kind === 'directory');
+  }
+
   private renderInterruptStatusQuery(
     task: AssemTask,
     queryKind: TaskStatusQueryKind,
@@ -2201,6 +2540,32 @@ export class AssemOrchestrator {
         return this.renderTaskStep(task, language);
       case 'completion':
         return this.renderTaskCompletionCheck(task, language);
+      case 'sources':
+        return this.renderTaskSources(task, language);
+      case 'read_sources':
+        return this.renderTaskReadSources(task, language);
+      case 'strong_sources':
+        return this.renderTaskStrongSources(task, language);
+      case 'weak_sources':
+        return this.renderTaskWeakSources(task, language);
+      case 'best_source':
+        return this.renderTaskBestSource(task, language);
+      case 'report_limitations':
+        return this.renderTaskLimitations(task, language);
+      case 'snippet_sources':
+        return this.renderTaskSnippetSources(task, language);
+      case 'discarded_sources':
+        return this.renderTaskDiscardedSources(task, language);
+      case 'evidence':
+        return this.renderTaskEvidence(task, language);
+      case 'report_location':
+        return this.renderTaskReportLocation(task, language);
+      case 'artifacts':
+        return this.renderTaskArtifacts(task, language);
+      case 'workspace_location':
+        return this.renderTaskWorkspaceLocation(task, language);
+      case 'failure':
+        return this.renderTaskFailure(task, language);
       case 'status':
       default:
         return this.renderTaskStatus(task, language);
@@ -2212,10 +2577,26 @@ export class AssemOrchestrator {
     language: SupportedLanguage
   ): string {
     const phase = task.currentPhase ?? (language === 'es' ? 'sin fase definida' : 'not set');
+    const reportArtifact = this.findReportArtifact(task);
+    const reportPath = reportArtifact?.filePath;
+
+    if (this.hasTaskFailureGuardrail(task)) {
+      const reason =
+        this.getResearchSearchError(task) ??
+        task.failureReason ??
+        (language === 'es' ? 'motivo no persistido' : 'no persisted reason');
+      return language === 'es'
+        ? `No. La tarea "${task.objective}" no esta terminada correctamente: estado ${this.describeTaskStatus(task.status, language)} en la fase ${phase}. Motivo: ${reason}. ${reportPath ? `Hay un informe registrado en ${reportPath}, pero la tarea quedo marcada con fallo.` : 'No hay artefacto de informe registrado.'}`
+        : `No. The task "${task.objective}" is not successfully complete: status ${this.describeTaskStatus(task.status, language)} in phase ${phase}. Reason: ${reason}. ${reportPath ? `A report is registered at ${reportPath}, but the task is marked as failed.` : 'No report artifact is registered.'}`;
+    }
 
     if (language === 'es') {
       if (task.status === 'completed') {
-        return `Si. La tarea "${task.objective}" ya esta completada.`;
+        if (this.isResearchTask(task) && !reportPath) {
+          return `La tarea "${task.objective}" figura como completada, pero no hay ningun artefacto report.md registrado. No puedo afirmar que el informe este listo sin ese dato persistido.`;
+        }
+
+        return `Si. La tarea "${task.objective}" ya esta completada.${reportPath ? ` Informe registrado: ${reportPath}.` : ''}`;
       }
 
       return `Todavia no. La tarea "${task.objective}" sigue ${this.describeTaskStatus(
@@ -2225,13 +2606,110 @@ export class AssemOrchestrator {
     }
 
     if (task.status === 'completed') {
-      return `Yes. The task "${task.objective}" is already completed.`;
+      if (this.isResearchTask(task) && !reportPath) {
+        return `The task "${task.objective}" is marked completed, but there is no registered report.md artifact. I cannot claim the report is ready without that persisted artifact.`;
+      }
+
+      return `Yes. The task "${task.objective}" is already completed.${reportPath ? ` Report artifact: ${reportPath}.` : ''}`;
     }
 
     return `Not yet. The task "${task.objective}" is still ${this.describeTaskStatus(
       task.status,
       language
     )} in phase ${phase}.`;
+  }
+
+  private renderTaskFailure(task: AssemTask, language: SupportedLanguage): string {
+    const phase =
+      task.currentPhase ?? (language === 'es' ? 'sin fase definida' : 'not set');
+    const reason =
+      this.getResearchSearchError(task) ??
+      task.failureReason ??
+      (language === 'es' ? 'no hay motivo persistido' : 'no persisted reason');
+    const selectedCount = this.getResearchSources(task, 'sourcesSelected').length;
+    const foundCount = this.getResearchSources(task, 'sourcesFound').length;
+    const reportArtifact = this.findReportArtifact(task);
+    const sourcesArtifact = this.findSourcesArtifact(task);
+
+    if (language === 'es') {
+      return `La tarea "${task.objective}" no tiene un resultado completado fiable. Estado real: ${this.describeTaskStatus(task.status, language)}. Fase registrada: ${phase}. Motivo: ${reason}. Fuentes persistidas: ${selectedCount} seleccionada(s) de ${foundCount} encontrada(s). ${reportArtifact?.filePath ? `Informe registrado: ${reportArtifact.filePath}.` : 'No hay report.md registrado.'} ${sourcesArtifact?.filePath ? `Fuentes registradas: ${sourcesArtifact.filePath}.` : 'No hay sources.json registrado.'}`;
+    }
+
+    return `The task "${task.objective}" does not have a reliable completed result. Real status: ${this.describeTaskStatus(task.status, language)}. Recorded phase: ${phase}. Reason: ${reason}. Persisted sources: ${selectedCount} selected of ${foundCount} found. ${reportArtifact?.filePath ? `Report artifact: ${reportArtifact.filePath}.` : 'No report.md artifact is registered.'} ${sourcesArtifact?.filePath ? `Sources artifact: ${sourcesArtifact.filePath}.` : 'No sources.json artifact is registered.'}`;
+  }
+
+  private renderTaskReportLocation(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const reportArtifact = this.findReportArtifact(task);
+    const summaryArtifact = this.findSummaryArtifact(task);
+    const workspaceArtifact = this.findWorkspaceArtifact(task);
+
+    if (reportArtifact?.filePath) {
+      return language === 'es'
+        ? `El informe registrado para "${task.objective}" esta en: ${reportArtifact.filePath}.${summaryArtifact?.filePath ? ` Resumen registrado: ${summaryArtifact.filePath}.` : ''}`
+        : `The registered report for "${task.objective}" is at: ${reportArtifact.filePath}.${summaryArtifact?.filePath ? ` Registered summary: ${summaryArtifact.filePath}.` : ''}`;
+    }
+
+    if (this.hasTaskFailureGuardrail(task)) {
+      const reason =
+        this.getResearchSearchError(task) ??
+        task.failureReason ??
+        (language === 'es' ? 'motivo no persistido' : 'no persisted reason');
+      return language === 'es'
+        ? `No se genero report.md para "${task.objective}". La tarea quedo ${this.describeTaskStatus(task.status, language)} antes de tener un informe registrado. Motivo: ${reason}.${workspaceArtifact?.filePath ? ` Solo consta la carpeta de trabajo: ${workspaceArtifact.filePath}.` : ''}`
+        : `No report.md was generated for "${task.objective}". The task ended ${this.describeTaskStatus(task.status, language)} before a report artifact was registered. Reason: ${reason}.${workspaceArtifact?.filePath ? ` Only the workspace folder is registered: ${workspaceArtifact.filePath}.` : ''}`;
+    }
+
+    if (workspaceArtifact?.filePath) {
+      return language === 'es'
+        ? `No hay ningun artefacto report.md registrado para "${task.objective}". Solo consta la carpeta de trabajo: ${workspaceArtifact.filePath}.`
+        : `There is no registered report.md artifact for "${task.objective}". Only the workspace folder is registered: ${workspaceArtifact.filePath}.`;
+    }
+
+    return language === 'es'
+      ? `No hay ningun informe registrado para "${task.objective}".`
+      : `There is no registered report artifact for "${task.objective}".`;
+  }
+
+  private renderTaskWorkspaceLocation(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const workspaceArtifact = this.findWorkspaceArtifact(task);
+    if (!workspaceArtifact?.filePath) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" no tiene una carpeta de trabajo registrada.`
+        : `The task "${task.objective}" does not have a registered workspace folder.`;
+    }
+
+    return language === 'es'
+      ? `La carpeta de trabajo registrada para "${task.objective}" esta en: ${workspaceArtifact.filePath}.`
+      : `The registered workspace folder for "${task.objective}" is at: ${workspaceArtifact.filePath}.`;
+  }
+
+  private renderTaskArtifacts(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    if (task.artifacts.length === 0) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" no tiene artefactos generados registrados.`
+        : `The task "${task.objective}" has no registered generated artifacts.`;
+    }
+
+    const list = task.artifacts
+      .slice(0, 8)
+      .map((artifact, index) => {
+        const location = artifact.filePath ? ` - ${artifact.filePath}` : '';
+        return `${index + 1}. ${artifact.label} (${artifact.kind})${location}`;
+      })
+      .join(' ');
+
+    return language === 'es'
+      ? `Artefactos reales registrados para "${task.objective}": ${list}`
+      : `Registered real artifacts for "${task.objective}": ${list}`;
   }
 
   private renderTaskArtifactsSummary(
@@ -2252,6 +2730,279 @@ export class AssemOrchestrator {
     }
 
     return `Latest artifact: ${latestArtifact.label}. Total artifacts: ${task.artifacts.length}.`;
+  }
+
+  private renderTaskSources(task: AssemTask, language: SupportedLanguage): string {
+    const research = task.metadata?.research;
+    if (!research || typeof research !== 'object') {
+      return language === 'es'
+        ? `La tarea "${task.objective}" todavia no tiene fuentes persistidas.`
+        : `The task "${task.objective}" does not have persisted sources yet.`;
+    }
+
+    const selectedSources = this.getResearchSources(task, 'sourcesSelected');
+    const foundSources = this.getResearchSources(task, 'sourcesFound');
+    const discardedSources = this.getResearchSources(task, 'sourcesDiscarded');
+    const searchError = this.getResearchSearchError(task);
+
+    if (searchError) {
+      return language === 'es'
+        ? `No hay fuentes seleccionadas para "${task.objective}". La busqueda fallo: ${searchError}. Resultados persistidos: ${foundSources.length}; descartados: ${discardedSources.length}. No voy a inventar fuentes ni hallazgos sin datos reales.`
+        : `There are no selected sources for "${task.objective}". Search failed: ${searchError}. Persisted results: ${foundSources.length}; discarded: ${discardedSources.length}. I will not invent sources or findings without real data.`;
+    }
+
+    if (selectedSources.length === 0) {
+      return language === 'es'
+        ? `No hay fuentes seleccionadas para "${task.objective}". Resultados encontrados persistidos: ${foundSources.length}; descartados: ${discardedSources.length}.`
+        : `There are no selected sources for "${task.objective}". Persisted found results: ${foundSources.length}; discarded: ${discardedSources.length}.`;
+    }
+
+    const readCount = selectedSources.filter(
+      (source) => source.evidenceLevel === 'page_read' || source.fetchStatus === 'ok'
+    ).length;
+    const strongCount = selectedSources.filter(
+      (source) => source.evidenceStrength === 'strong'
+    ).length;
+    const weakOrTangentialCount = selectedSources.filter((source) =>
+      ['weak', 'tangential'].includes(String(source.evidenceStrength ?? ''))
+    ).length;
+    const list = selectedSources
+      .slice(0, 5)
+      .map((source, index) => this.formatResearchSourceWithEvidence(source, index))
+      .join(' ');
+
+    if (language === 'es') {
+      return `Fuentes seleccionadas para "${task.objective}": ${selectedSources.length} de ${foundSources.length} resultado(s). Paginas leidas: ${readCount}. Fuentes con evidencia fuerte: ${strongCount}. Fuentes debiles o tangenciales: ${weakOrTangentialCount}. ${list}`;
+    }
+
+    return `Selected sources for "${task.objective}": ${selectedSources.length} of ${foundSources.length} result(s). Read pages: ${readCount}. Strong-evidence sources: ${strongCount}. Weak or tangential sources: ${weakOrTangentialCount}. ${list}`;
+  }
+
+  private renderTaskReadSources(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const searchError = this.getResearchSearchError(task);
+    if (searchError) {
+      return language === 'es'
+        ? `No pude leer fuentes de verdad porque la investigacion fallo: ${searchError}.`
+        : `I could not actually read sources because the research failed: ${searchError}.`;
+    }
+
+    const readSources = this.getResearchSources(task, 'sourcesSelected').filter(
+      (source) =>
+        (source.evidenceLevel === 'page_read' || source.fetchStatus === 'ok') &&
+        ['high', 'medium'].includes(String(source.readQuality ?? ''))
+    );
+
+    if (readSources.length === 0) {
+      return language === 'es'
+        ? `No hay paginas leidas con calidad media o alta para "${task.objective}". Puede que la investigacion siga en una fase anterior o que las lecturas hayan quedado solo como snippets o lecturas pobres.`
+        : `There are no medium/high quality read pages for "${task.objective}". The research may still be in an earlier phase or the reads may have degraded to snippet-only or low-quality content.`;
+    }
+
+    const list = readSources
+      .slice(0, 5)
+      .map((source, index) => this.formatResearchSourceWithEvidence(source, index))
+      .join(' ');
+    return language === 'es'
+      ? `Paginas leidas bien de verdad para "${task.objective}": ${readSources.length}. ${list}`
+      : `Actually well-read pages for "${task.objective}": ${readSources.length}. ${list}`;
+  }
+
+  private renderTaskStrongSources(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const sources = this.getResearchSources(task, 'sourcesSelected').filter(
+      (source) => source.evidenceStrength === 'strong'
+    );
+
+    if (sources.length === 0) {
+      return language === 'es'
+        ? `No hay fuentes con evidencia fuerte persistida para "${task.objective}".`
+        : `There are no persisted strong-evidence sources for "${task.objective}".`;
+    }
+
+    const list = sources
+      .slice(0, 5)
+      .map((source, index) => this.formatResearchSourceWithEvidence(source, index))
+      .join(' ');
+    return language === 'es'
+      ? `Fuentes con evidencia fuerte para "${task.objective}": ${sources.length}. ${list}`
+      : `Strong-evidence sources for "${task.objective}": ${sources.length}. ${list}`;
+  }
+
+  private renderTaskWeakSources(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const sources = this.getResearchSources(task, 'sourcesSelected').filter((source) =>
+      ['weak', 'tangential'].includes(String(source.evidenceStrength ?? ''))
+    );
+
+    if (sources.length === 0) {
+      return language === 'es'
+        ? `No hay fuentes debiles o tangenciales persistidas para "${task.objective}".`
+        : `There are no persisted weak or tangential sources for "${task.objective}".`;
+    }
+
+    const list = sources
+      .slice(0, 5)
+      .map((source, index) => this.formatResearchSourceWithEvidence(source, index))
+      .join(' ');
+    return language === 'es'
+      ? `Fuentes debiles o tangenciales para "${task.objective}": ${sources.length}. ${list}`
+      : `Weak or tangential sources for "${task.objective}": ${sources.length}. ${list}`;
+  }
+
+  private renderTaskBestSource(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const sources = this.getResearchSources(task, 'sourcesSelected').slice().sort((left, right) => {
+      const leftStrength = ['insufficient', 'tangential', 'weak', 'medium', 'strong'].indexOf(
+        String(left.evidenceStrength ?? 'insufficient')
+      );
+      const rightStrength = ['insufficient', 'tangential', 'weak', 'medium', 'strong'].indexOf(
+        String(right.evidenceStrength ?? 'insufficient')
+      );
+      if (leftStrength !== rightStrength) {
+        return rightStrength - leftStrength;
+      }
+
+      return Number(right.relevanceScore ?? 0) - Number(left.relevanceScore ?? 0);
+    });
+    const best = sources[0];
+
+    if (!best) {
+      return language === 'es'
+        ? `Todavia no hay una fuente mejor persistida para "${task.objective}".`
+        : `There is no persisted best source yet for "${task.objective}".`;
+    }
+
+    return language === 'es'
+      ? `La mejor fuente persistida para "${task.objective}" es ${this.formatResearchSourceWithEvidence(best, 0)}`
+      : `The best persisted source for "${task.objective}" is ${this.formatResearchSourceWithEvidence(best, 0)}`;
+  }
+
+  private renderTaskSnippetSources(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const snippetSources = this.getResearchSources(task, 'sourcesSelected').filter(
+      (source) =>
+        source.evidenceLevel === 'snippet_only' ||
+        source.usedAs === 'snippet_only' ||
+        (source.snippet && source.fetchStatus !== 'ok')
+    );
+
+    if (snippetSources.length === 0) {
+      return language === 'es'
+        ? `No hay fuentes marcadas como snippet-only para "${task.objective}".`
+        : `There are no snippet-only sources for "${task.objective}".`;
+    }
+
+    const list = snippetSources
+      .slice(0, 5)
+      .map((source, index) => this.formatResearchSource(source, index))
+      .join(' ');
+    return language === 'es'
+      ? `Fuentes usadas solo como snippet para "${task.objective}": ${snippetSources.length}. ${list}`
+      : `Snippet-only sources for "${task.objective}": ${snippetSources.length}. ${list}`;
+  }
+
+  private renderTaskDiscardedSources(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const discardedSources = this.getResearchSources(task, 'sourcesDiscarded');
+    if (discardedSources.length === 0) {
+      return language === 'es'
+        ? `No hay fuentes descartadas persistidas para "${task.objective}".`
+        : `There are no persisted discarded sources for "${task.objective}".`;
+    }
+
+    const list = discardedSources
+      .slice(0, 6)
+      .map((source, index) => {
+        const reason =
+          typeof source.selectionReason === 'string'
+            ? source.selectionReason
+            : 'motivo no registrado';
+        return `${this.formatResearchSource(source, index)} [${reason}]`;
+      })
+      .join(' ');
+
+    return language === 'es'
+      ? `Fuentes descartadas para "${task.objective}": ${discardedSources.length}. ${list}`
+      : `Discarded sources for "${task.objective}": ${discardedSources.length}. ${list}`;
+  }
+
+  private renderTaskEvidence(task: AssemTask, language: SupportedLanguage): string {
+    const searchError = this.getResearchSearchError(task);
+    if (searchError) {
+      return language === 'es'
+        ? `No hay evidencia de investigacion util porque la tarea fallo: ${searchError}.`
+        : `There is no useful research evidence because the task failed: ${searchError}.`;
+    }
+
+    const evidence = this.getResearchEvidence(task);
+    if (evidence.length === 0) {
+      return language === 'es'
+        ? `No hay evidencia persistida para "${task.objective}" todavia.`
+        : `There is no persisted evidence for "${task.objective}" yet.`;
+    }
+
+    const list = evidence
+      .slice(0, 5)
+      .map((record, index) => {
+        const title =
+          typeof record.sourceTitle === 'string' && record.sourceTitle.trim()
+            ? record.sourceTitle
+            : `Fuente ${index + 1}`;
+        const domain =
+          typeof record.sourceDomain === 'string' && record.sourceDomain.trim()
+            ? record.sourceDomain
+            : 'dominio desconocido';
+        const basis =
+          typeof record.basis === 'string' ? record.basis : 'unknown';
+        const strength =
+          typeof record.evidenceStrength === 'string'
+            ? record.evidenceStrength
+            : 'insufficient';
+        const summary =
+          typeof record.summary === 'string' && record.summary.trim()
+            ? record.summary
+            : 'sin resumen persistido';
+        return `${index + 1}. ${title} (${domain}) [${basis} / ${strength}]: ${shortenText(summary, 220)}`;
+      })
+      .join(' ');
+
+    return language === 'es'
+      ? `Evidencia persistida para "${task.objective}": ${evidence.length} registro(s). ${list}`
+      : `Persisted evidence for "${task.objective}": ${evidence.length} record(s). ${list}`;
+  }
+
+  private renderTaskLimitations(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const limitations = this.getResearchLimitations(task);
+    if (limitations.length === 0) {
+      return language === 'es'
+        ? `No hay limitaciones persistidas para "${task.objective}" todavia.`
+        : `There are no persisted limitations for "${task.objective}" yet.`;
+    }
+
+    const list = limitations
+      .slice(0, 6)
+      .map((item, index) => `${index + 1}. ${item}`)
+      .join(' ');
+
+    return language === 'es'
+      ? `Limitaciones persistidas del informe "${task.objective}": ${list}`
+      : `Persisted report limitations for "${task.objective}": ${list}`;
   }
 
   private renderTaskRefinementsSummary(
@@ -2315,20 +3066,21 @@ export class AssemOrchestrator {
     refinement: TaskRefinementDraft,
     language: SupportedLanguage
   ): string {
-    const draftCompleted = this.isTaskStepCompleted(previousTask, 'draft-report');
+    const synthesisCompleted = this.isTaskStepCompleted(previousTask, 'synthesize-findings');
+    const selectionCompleted = this.isTaskStepCompleted(previousTask, 'select-sources');
     const reportWritten = this.isTaskStepCompleted(previousTask, 'write-report');
     const summaryWritten = this.isTaskStepCompleted(previousTask, 'write-summary');
 
     if (language === 'es') {
       if (refinement.type === 'length') {
-        return draftCompleted
-          ? 'He guardado que lo quieres mas corto, pero el borrador principal ya esta generado. Lo dejo asociado a la tarea activa, aunque no reescribe pasos ya cerrados.'
+        return synthesisCompleted
+          ? 'He guardado que lo quieres mas corto, pero la sintesis principal ya esta generada. Lo dejo asociado a la tarea activa, aunque no reescribe pasos ya cerrados.'
           : 'He guardado que lo quieres mas corto. Lo aplicare en los pasos de generacion que todavia no se han completado.';
       }
 
       if (refinement.type === 'language') {
-        return draftCompleted
-          ? `He guardado el cambio de idioma a ${refinement.value === 'en' ? 'ingles' : 'espanol'}. Afectara a los pasos futuros que sigan siendo compatibles, pero no reescribe el borrador que ya se genero.`
+        return synthesisCompleted
+          ? `He guardado el cambio de idioma a ${refinement.value === 'en' ? 'ingles' : 'espanol'}. Afectara a pasos futuros compatibles, pero no reescribe la sintesis ya generada.`
           : `He guardado el cambio de idioma a ${refinement.value === 'en' ? 'ingles' : 'espanol'} y lo aplicare en los siguientes pasos de generacion.`;
       }
 
@@ -2339,29 +3091,39 @@ export class AssemOrchestrator {
       }
 
       if (refinement.type === 'format') {
-        return draftCompleted
-          ? 'He guardado que quieres una tabla, pero el borrador principal ya esta generado. Lo dejo anotado en la tarea, aunque no reharia el contenido ya producido.'
+        return synthesisCompleted
+          ? 'He guardado que quieres una tabla, pero la sintesis principal ya esta generada. Lo dejo anotado en la tarea, aunque no reharia el contenido ya producido.'
           : 'He guardado que quieres una tabla y la intentare incluir en el borrador si el siguiente paso todavia lo permite.';
       }
 
       if (refinement.type === 'focus') {
-        return draftCompleted
-          ? `He guardado el nuevo enfoque "${refinement.value ?? refinement.label}", pero el borrador actual ya esta generado. Si quieres rehacer el trabajo completo con ese enfoque, tendria que abrir una nueva tarea o regenerar el borrador.`
+        return synthesisCompleted
+          ? `He guardado el nuevo enfoque "${refinement.value ?? refinement.label}", pero la sintesis actual ya esta generada. Si quieres rehacer el trabajo completo con ese enfoque, tendria que abrir una nueva tarea o regenerar la sintesis.`
           : `He cambiado el enfoque de la tarea activa hacia "${refinement.value ?? refinement.label}" y lo aplicare en los siguientes pasos.`;
+      }
+
+      if (
+        refinement.type === 'source_preference' ||
+        refinement.type === 'source_exclusion' ||
+        refinement.type === 'recency'
+      ) {
+        return selectionCompleted
+          ? `He guardado el ajuste de fuentes "${refinement.label}", pero la seleccion de fuentes ya estaba hecha. Queda persistido para auditoria y pasos futuros compatibles, sin rehacer automaticamente la busqueda.`
+          : `He guardado el ajuste de fuentes "${refinement.label}". Lo aplicare al buscar o seleccionar fuentes si esa fase aun no se ha completado.`;
       }
 
       return `He guardado el ajuste "${refinement.label}" en la tarea activa.`;
     }
 
     if (refinement.type === 'length') {
-      return draftCompleted
-        ? 'I saved the request to make it shorter, but the main draft is already generated. It stays attached to the active task without rewriting completed steps.'
+      return synthesisCompleted
+        ? 'I saved the request to make it shorter, but the main synthesis is already generated. It stays attached to the active task without rewriting completed steps.'
         : 'I saved the request to make it shorter and will apply it to the remaining generation steps.';
     }
 
     if (refinement.type === 'language') {
-      return draftCompleted
-        ? `I saved the language change to ${refinement.value === 'en' ? 'English' : 'Spanish'}. It can still affect compatible future steps, but it will not rewrite the draft that already exists.`
+      return synthesisCompleted
+        ? `I saved the language change to ${refinement.value === 'en' ? 'English' : 'Spanish'}. It can still affect compatible future steps, but it will not rewrite the synthesis that already exists.`
         : `I saved the language change to ${refinement.value === 'en' ? 'English' : 'Spanish'} and will apply it to the remaining generation steps.`;
     }
 
@@ -2372,18 +3134,61 @@ export class AssemOrchestrator {
     }
 
     if (refinement.type === 'format') {
-      return draftCompleted
-        ? 'I saved the request to include a table, but the main draft already exists. The task keeps that refinement without regenerating finished content.'
+      return synthesisCompleted
+        ? 'I saved the request to include a table, but the main synthesis already exists. The task keeps that refinement without regenerating finished content.'
         : 'I saved the request to include a table and will apply it if the remaining draft step still allows it.';
     }
 
     if (refinement.type === 'focus') {
-      return draftCompleted
-        ? `I saved the new focus "${refinement.value ?? refinement.label}", but the current draft is already generated. Reworking the whole output around that focus would require a new task or a draft regeneration step.`
+      return synthesisCompleted
+        ? `I saved the new focus "${refinement.value ?? refinement.label}", but the current synthesis is already generated. Reworking the whole output around that focus would require a new task or regeneration.`
         : `I changed the focus of the active task toward "${refinement.value ?? refinement.label}" and will apply it to the remaining steps.`;
     }
 
+    if (
+      refinement.type === 'source_preference' ||
+      refinement.type === 'source_exclusion' ||
+      refinement.type === 'recency'
+    ) {
+      return selectionCompleted
+        ? `I saved the source refinement "${refinement.label}", but source selection was already completed. It remains persisted for audit and compatible future steps without automatically rerunning search.`
+        : `I saved the source refinement "${refinement.label}" and will apply it while searching or selecting sources if that phase is still pending.`;
+    }
+
     return `I saved the refinement "${refinement.label}" on the active task.`;
+  }
+
+  private renderTaskRefinementRejected(
+    task: AssemTask,
+    refinement: TaskRefinementDraft,
+    language: SupportedLanguage
+  ): string {
+    const reason =
+      this.getResearchSearchError(task) ??
+      task.failureReason ??
+      (language === 'es' ? 'la tarea ya no esta en un estado modificable' : 'the task is no longer in a modifiable state');
+
+    if (language === 'es') {
+      return `No he aplicado "${refinement.label}" a la tarea "${task.objective}". Estado real: ${this.describeTaskStatus(task.status, language)}. Motivo: ${reason}. No he rehecho fuentes, sintesis ni informe; para aplicar ese cambio hay que reintentar o abrir una nueva tarea cuando el fallo este corregido.`;
+    }
+
+    return `I did not apply "${refinement.label}" to the task "${task.objective}". Real status: ${this.describeTaskStatus(task.status, language)}. Reason: ${reason}. I did not redo sources, synthesis or report output; apply that change by retrying or opening a new task after the failure is fixed.`;
+  }
+
+  private renderFinishedTaskCannotBeChanged(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const reason =
+      this.getResearchSearchError(task) ??
+      task.failureReason ??
+      (language === 'es' ? 'no hay una tarea activa modificable' : 'there is no modifiable active task');
+
+    if (language === 'es') {
+      return `No puedo modificar la tarea "${task.objective}" desde este mensaje porque su estado real es ${this.describeTaskStatus(task.status, language)}. Motivo: ${reason}. No voy a fingir que he aplicado cambios retroactivos.`;
+    }
+
+    return `I cannot modify the task "${task.objective}" from this message because its real status is ${this.describeTaskStatus(task.status, language)}. Reason: ${reason}. I will not pretend that retroactive changes were applied.`;
   }
 
   private async handleTaskManagerIntent(
@@ -2397,6 +3202,8 @@ export class AssemOrchestrator {
       isTaskStatusRequest(text) ||
       isTaskProgressRequest(text) ||
       isTaskStepRequest(text) ||
+      isTaskCompletionRequest(text) ||
+      isTaskStateArtifactRequest(text) ||
       isTaskPauseRequest(text) ||
       isTaskResumeRequest(text) ||
       isTaskCancelRequest(text);
@@ -2416,7 +3223,9 @@ export class AssemOrchestrator {
         session,
         text,
         objective: isTaskCreateRequest(text) ? extractTaskObjective(text) ?? undefined : undefined,
-        activeProfile: activeProfile ? summarizeProfile(activeProfile) : null
+        activeProfile: activeProfile ? summarizeProfile(activeProfile) : null,
+        webSearchAvailable: this.isWebSearchConfigured(),
+        privacyAllowsWebSearch: session.activeMode.privacy !== 'local_only'
       });
 
       if (!planResult.accepted || !planResult.plan) {
@@ -2642,19 +3451,32 @@ export class AssemOrchestrator {
     const phase = task.currentPhase ?? (language === 'es' ? 'sin fase definida' : 'no phase yet');
     const previousTaskChanged =
       previousActiveTask && previousActiveTask.id !== task.id;
+    const isResearchTask =
+      task.plan?.taskType === 'research_report_basic' ||
+      task.metadata?.taskType === 'research_report_basic';
 
     if (language === 'es') {
+      const researchIntro = isResearchTask
+        ? ' Me pongo con ello: buscare fuentes web configuradas, seleccionare resultados utiles y preparare report.md, summary.txt y sources.json solo si hay fuentes reales.'
+        : '';
       return previousTaskChanged
-        ? `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}. La tarea anterior "${previousActiveTask.objective}" ha quedado en pausa.`
-        : `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.`;
+        ? `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.${researchIntro} La tarea anterior "${previousActiveTask.objective}" ha quedado en pausa.`
+        : `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.${researchIntro}`;
     }
 
+    const researchIntro = isResearchTask
+      ? ' I will search configured web sources, select useful results and prepare report.md, summary.txt and sources.json only when real sources are available.'
+      : '';
     return previousTaskChanged
-      ? `I opened a new active task: "${task.objective}". Current phase: ${phase}. The previous task "${previousActiveTask.objective}" is now paused.`
-      : `I opened a new active task: "${task.objective}". Current phase: ${phase}.`;
+      ? `I opened a new active task: "${task.objective}". Current phase: ${phase}.${researchIntro} The previous task "${previousActiveTask.objective}" is now paused.`
+      : `I opened a new active task: "${task.objective}". Current phase: ${phase}.${researchIntro}`;
   }
 
   private renderTaskStatus(task: AssemTask, language: SupportedLanguage): string {
+    if (this.hasTaskFailureGuardrail(task)) {
+      return this.renderTaskFailure(task, language);
+    }
+
     const currentStep = this.resolveCurrentTaskStep(task);
     const artifactsSummary = this.renderTaskArtifactsSummary(task, language);
     const refinementsSummary = this.renderTaskRefinementsSummary(task, language);
@@ -2666,7 +3488,7 @@ export class AssemOrchestrator {
           : `${task.progressPercent}% completado`;
       const phase = task.currentPhase ?? 'sin fase definida';
       const step = currentStep ? `Paso actual: ${currentStep.label}.` : '';
-      return `La tarea activa es "${task.objective}". Estado: ${this.describeTaskStatus(task.status, language)}. Fase actual: ${phase}. Progreso registrado: ${progress}.${step ? ` ${step}` : ''}${artifactsSummary ? ` ${artifactsSummary}` : ''}${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+      return `La tarea es "${task.objective}". Estado: ${this.describeTaskStatus(task.status, language)}. Fase actual: ${phase}. Progreso registrado: ${progress}.${step ? ` ${step}` : ''}${artifactsSummary ? ` ${artifactsSummary}` : ''}${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
     }
 
     const progress =
@@ -2675,10 +3497,14 @@ export class AssemOrchestrator {
         : `${task.progressPercent}% completed`;
     const phase = task.currentPhase ?? 'no phase yet';
     const step = currentStep ? `Current step: ${currentStep.label}.` : '';
-    return `The active task is "${task.objective}". Status: ${this.describeTaskStatus(task.status, language)}. Current phase: ${phase}. Recorded progress: ${progress}.${step ? ` ${step}` : ''}${artifactsSummary ? ` ${artifactsSummary}` : ''}${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
+    return `The task is "${task.objective}". Status: ${this.describeTaskStatus(task.status, language)}. Current phase: ${phase}. Recorded progress: ${progress}.${step ? ` ${step}` : ''}${artifactsSummary ? ` ${artifactsSummary}` : ''}${refinementsSummary ? ` ${refinementsSummary}` : ''}`;
   }
 
   private renderTaskProgress(task: AssemTask, language: SupportedLanguage): string {
+    if (this.hasTaskFailureGuardrail(task)) {
+      return this.renderTaskFailure(task, language);
+    }
+
     const refinementsSummary = this.renderTaskRefinementsSummary(task, language);
 
     if (language === 'es') {
@@ -2699,6 +3525,10 @@ export class AssemOrchestrator {
   }
 
   private renderTaskStep(task: AssemTask, language: SupportedLanguage): string {
+    if (this.hasTaskFailureGuardrail(task)) {
+      return this.renderTaskFailure(task, language);
+    }
+
     const currentStep = this.resolveCurrentTaskStep(task);
     const artifactsSummary = this.renderTaskArtifactsSummary(task, language);
 
@@ -3068,7 +3898,10 @@ export class AssemOrchestrator {
   }
 
   private resolveLastCreateEntryInput(session: SessionState): LocalFileInput | null {
-    if (session.pendingAction?.toolId === 'local-files.create-entry') {
+    if (
+      isActivePendingAction(session.pendingAction) &&
+      session.pendingAction.toolId === 'local-files.create-entry'
+    ) {
       return session.pendingAction.input as LocalFileInput;
     }
 
@@ -3123,7 +3956,9 @@ export class AssemOrchestrator {
     text: string,
     trace: InteractionTrace
   ): Promise<SessionSnapshot | null> {
-    const pendingAction = session.pendingAction;
+    const pendingAction = isActivePendingAction(session.pendingAction)
+      ? session.pendingAction
+      : null;
     if (pendingAction?.toolId !== 'local-files.create-entry') {
       return null;
     }

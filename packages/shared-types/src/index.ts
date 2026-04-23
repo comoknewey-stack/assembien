@@ -69,6 +69,7 @@ export type VoiceTranscriptionDiagnosticCode =
 
 export type TelemetryChannel =
   | 'chat'
+  | 'research'
   | 'voice_capture'
   | 'voice_stt'
   | 'voice_tts'
@@ -104,7 +105,22 @@ export type TaskTelemetryEventType =
   | 'task_interrupt_cancel'
   | 'task_interrupt_refinement'
   | 'task_interrupt_clarification'
-  | 'task_interrupt_independent_query';
+  | 'task_interrupt_independent_query'
+  | 'task_interrupt_sources_query';
+
+export type ResearchTelemetryEventType =
+  | 'research_started'
+  | 'research_search_started'
+  | 'research_search_completed'
+  | 'research_sources_selected'
+  | 'research_page_fetch_started'
+  | 'research_page_fetch_completed'
+  | 'research_page_fetch_failed'
+  | 'research_evidence_extracted'
+  | 'research_evidence_saved'
+  | 'research_synthesis_started'
+  | 'research_report_written'
+  | 'research_failed';
 
 export type VoiceTelemetryEventType =
   | 'voice_mode_enabled'
@@ -181,7 +197,7 @@ export type TaskInterruptKind =
   | 'task_clarification_needed'
   | 'independent_query';
 
-export type TaskRefinementCategory = 'goal' | 'output';
+export type TaskRefinementCategory = 'goal' | 'output' | 'source';
 
 export type TaskRefinementType =
   | 'length'
@@ -189,6 +205,9 @@ export type TaskRefinementType =
   | 'summary_priority'
   | 'format'
   | 'focus'
+  | 'source_preference'
+  | 'source_exclusion'
+  | 'recency'
   | 'general';
 
 export type TaskStatusQueryKind =
@@ -197,7 +216,20 @@ export type TaskStatusQueryKind =
   | 'step'
   | 'remaining'
   | 'completion'
-  | 'plan';
+  | 'plan'
+  | 'sources'
+  | 'read_sources'
+  | 'strong_sources'
+  | 'weak_sources'
+  | 'best_source'
+  | 'report_limitations'
+  | 'snippet_sources'
+  | 'discarded_sources'
+  | 'evidence'
+  | 'report_location'
+  | 'artifacts'
+  | 'workspace_location'
+  | 'failure';
 
 export interface ActiveMode {
   privacy: PrivacyMode;
@@ -419,6 +451,229 @@ export interface ToolRegistry {
   summaries(): ToolSummary[];
 }
 
+export interface WebSearchInput {
+  query: string;
+  maxResults?: number;
+  preferredDomains?: string[];
+  excludedDomains?: string[];
+  recencyDays?: number;
+}
+
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet?: string;
+  source?: string;
+  publishedAt?: string;
+  retrievedAt: string;
+}
+
+export interface WebSearchOutput {
+  providerId: string;
+  query: string;
+  retrievedAt: string;
+  results: WebSearchResult[];
+}
+
+export interface WebSearchProviderStatus {
+  providerId: string;
+  configured: boolean;
+  available: boolean;
+  maxResults: number;
+  endpoint?: string;
+  lastError?: string;
+}
+
+export interface WebSearchProvider {
+  id: string;
+  label: string;
+  maxResults: number;
+  getStatus(): WebSearchProviderStatus;
+  search(input: WebSearchInput): Promise<WebSearchOutput>;
+}
+
+export type WebPageFetchStatus =
+  | 'ok'
+  | 'unreadable'
+  | 'timeout'
+  | 'blocked'
+  | 'error';
+
+export interface WebPageFetchInput {
+  url: string;
+  timeoutMs?: number;
+  maxContentChars?: number;
+}
+
+export type WebPageReadQuality = 'high' | 'medium' | 'low';
+
+export interface WebPageFetchOutput {
+  url: string;
+  finalUrl?: string;
+  title?: string;
+  contentText?: string;
+  excerpt?: string;
+  contentLength?: number;
+  fetchedAt: string;
+  status: WebPageFetchStatus;
+  httpStatus?: number;
+  contentType?: string;
+  readQuality?: WebPageReadQuality;
+  qualityScore?: number;
+  textDensity?: number;
+  linkDensity?: number;
+  qualityNotes?: string[];
+  errorMessage?: string;
+  safetyNotes?: string[];
+}
+
+export interface WebPageReaderProviderStatus {
+  providerId: string;
+  configured: boolean;
+  available: boolean;
+  enabled: boolean;
+  timeoutMs: number;
+  maxContentChars: number;
+  maxSources: number;
+  lastError?: string;
+}
+
+export interface WebPageReaderProvider {
+  id: string;
+  label: string;
+  enabled: boolean;
+  timeoutMs: number;
+  maxContentChars: number;
+  maxSources: number;
+  getStatus(): WebPageReaderProviderStatus;
+  fetchPageContent(input: WebPageFetchInput): Promise<WebPageFetchOutput>;
+}
+
+export type ResearchSourceSelectionStatus = 'selected' | 'discarded';
+export type ResearchEvidenceLevel =
+  | 'page_read'
+  | 'snippet_only'
+  | 'limited'
+  | 'none';
+export type ResearchEvidenceStrength =
+  | 'strong'
+  | 'medium'
+  | 'weak'
+  | 'tangential'
+  | 'insufficient';
+export type ResearchEvidenceRelevance =
+  | 'direct'
+  | 'supporting'
+  | 'tangential'
+  | 'insufficient';
+
+export interface ResearchSourceRecord extends WebSearchResult {
+  id: string;
+  normalizedUrl: string;
+  domain: string;
+  selectionStatus: ResearchSourceSelectionStatus;
+  selectionReason: string;
+  fetchAttempted?: boolean;
+  fetchStatus?: WebPageFetchStatus;
+  fetchErrorMessage?: string;
+  finalUrl?: string;
+  fetchedTitle?: string;
+  contentExcerpt?: string;
+  contentLength?: number;
+  readQuality?: WebPageReadQuality;
+  readQualityScore?: number;
+  relevanceScore?: number;
+  evidenceLevel?: ResearchEvidenceLevel;
+  evidenceStrength?: ResearchEvidenceStrength;
+  evidenceRelevance?: ResearchEvidenceRelevance;
+  evidenceNotes?: string[];
+  qualityNotes?: string[];
+  relevanceNotes?: string[];
+  synthesisUsage?: 'primary' | 'secondary' | 'discarded';
+  usedAs?: 'page_read' | 'snippet_only' | 'discarded';
+}
+
+export interface FetchedPageRecord {
+  sourceId: string;
+  url: string;
+  finalUrl?: string;
+  title?: string;
+  fetchedAt: string;
+  fetchStatus: WebPageFetchStatus;
+  httpStatus?: number;
+  contentType?: string;
+  contentExcerpt?: string;
+  contentLength?: number;
+  readQuality?: WebPageReadQuality;
+  qualityScore?: number;
+  textDensity?: number;
+  linkDensity?: number;
+  qualityNotes?: string[];
+  errorMessage?: string;
+  safetyNotes?: string[];
+}
+
+export interface ResearchEvidenceRecord {
+  id: string;
+  sourceId: string;
+  sourceTitle: string;
+  sourceUrl: string;
+  sourceDomain: string;
+  evidenceLevel: ResearchEvidenceLevel;
+  evidenceStrength: ResearchEvidenceStrength;
+  evidenceRelevance: ResearchEvidenceRelevance;
+  basis: 'page_content' | 'snippet' | 'none';
+  summary: string;
+  facts: string[];
+  excerpt?: string;
+  qualityNotes?: string[];
+  relevanceNotes?: string[];
+  usedForSynthesis?: 'primary' | 'secondary' | 'discarded';
+  extractedAt: string;
+}
+
+export interface ResearchTaskMetadata {
+  query: string;
+  providerId: string;
+  retrievedAt?: string;
+  searchedAt?: string;
+  sourcesFound: ResearchSourceRecord[];
+  sourcesSelected: ResearchSourceRecord[];
+  sourcesDiscarded: ResearchSourceRecord[];
+  selectionNotes: string[];
+  limitations: string[];
+  searchError?: string;
+  pageFetchEnabled?: boolean;
+  pageFetchMaxSources?: number;
+  pagesFetched?: FetchedPageRecord[];
+  evidence?: ResearchEvidenceRecord[];
+  evidenceSavedAt?: string;
+  evidenceLevel?: ResearchEvidenceLevel;
+  evidenceStrength?: ResearchEvidenceStrength;
+}
+
+export interface WebSearchRuntimeStatus {
+  providerId?: string;
+  configured: boolean;
+  available: boolean;
+  maxResults: number;
+  endpoint?: string;
+  privacyAllowsWeb: boolean;
+  lastError?: string;
+}
+
+export interface WebPageReaderRuntimeStatus {
+  providerId?: string;
+  configured: boolean;
+  available: boolean;
+  enabled: boolean;
+  maxSources: number;
+  timeoutMs: number;
+  maxContentChars: number;
+  privacyAllowsWeb: boolean;
+  lastError?: string;
+}
+
 export interface CalendarProvider {
   id: string;
   label: string;
@@ -574,7 +829,7 @@ export interface TelemetryRecord {
   fallbackReason?: string;
   audioDurationMs?: number;
   textLength?: number;
-  eventType?: TaskTelemetryEventType | VoiceTelemetryEventType;
+  eventType?: TaskTelemetryEventType | VoiceTelemetryEventType | ResearchTelemetryEventType;
   taskId?: string;
   taskStatus?: TaskStatus;
 }
@@ -735,6 +990,8 @@ export interface TaskPlanningContext {
   requestedTaskType?: string;
   activeProfile?: ProfileSummary | null;
   initialRefinements?: TaskRefinement[];
+  webSearchAvailable?: boolean;
+  privacyAllowsWebSearch?: boolean;
   now?: Date;
 }
 
@@ -848,7 +1105,7 @@ export interface TaskExecutionResult {
 }
 
 export interface TaskRuntimeEvent {
-  type: TaskTelemetryEventType;
+  type: TaskTelemetryEventType | ResearchTelemetryEventType;
   task: AssemTask;
   timestamp: string;
   stepId?: string;
@@ -878,6 +1135,10 @@ export interface TaskExecutionContext {
   attachArtifact(input: TaskArtifactInput): Promise<AssemTask>;
   ensureArtifact(input: TaskArtifactInput): Promise<AssemTask>;
   mergeMetadata(metadata: Record<string, unknown>): Promise<AssemTask>;
+  emitEvent(
+    type: TaskTelemetryEventType | ResearchTelemetryEventType,
+    detail?: string
+  ): Promise<void>;
   waitIfPaused(): Promise<void>;
   ensureNotCancelled(): Promise<void>;
 }
@@ -992,6 +1253,8 @@ export interface SystemStateSnapshot {
   session: SessionSnapshot | null;
   health: AgentHealthSnapshot;
   providerRuntime: ProviderRuntimeStatus;
+  webSearch: WebSearchRuntimeStatus;
+  webPageReader: WebPageReaderRuntimeStatus;
   taskManager: TaskManagerStateSnapshot;
   voice: VoiceSystemState;
   profiles: ProfileSummary[];
@@ -1514,5 +1777,17 @@ export interface AssemConfig {
   whisperCppThreads: number;
   whisperCppInitialPrompt?: string;
   whisperCppBeamSize?: number;
+  webSearchProvider: string;
+  webSearchApiKey?: string;
+  webSearchEndpoint?: string;
+  webSearchMaxResults: number;
+  webSearchTimeoutMs: number;
+  webPageFetchEnabled: boolean;
+  webPageFetchTimeoutMs: number;
+  webPageMaxSources: number;
+  webPageMaxContentChars: number;
+  webPageMinTextChars: number;
+  webPageMinTextDensity: number;
+  webPageMaxLinkDensity: number;
   allowedOrigins: string[];
 }

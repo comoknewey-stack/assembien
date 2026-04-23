@@ -21,29 +21,45 @@ It:
 
 - receives an objective
 - creates a local workspace inside the sandbox
-- generates a first markdown draft through the configured model router
+- searches configured web sources through `web-search.search`
+- deduplicates and selects sources from real search results
+- persists selection/discard reasons
+- reads a very small bounded subset of selected public pages through `web-page-reader.fetch-page` when page fetch is enabled
+- persists fetched-page status, cleaned excerpts and extracted evidence notes
+- synthesizes findings through the configured model router using persisted evidence, preferring page-read evidence over snippet-only evidence
+- writes a real `sources.json`
+- writes a real `evidence.json`
 - writes a real `report.md`
 - writes a real `summary.txt`
 - registers those outputs as artifacts
+
+If the session is `local_only` or web search is not configured, the orchestrator blocks before runtime task creation.
+If search fails, times out or produces no selected sources, the task fails with `metadata.research.searchError` and does not write empty report artifacts.
+If page reading is disabled, unreadable or times out, runtime degrades honestly to snippet-only evidence when enough evidence still exists.
+If there is no usable persisted evidence after selection/fetch, the task fails instead of inventing findings.
 
 ## Real Phases
 
 Current execution phases and steps:
 
 1. `prepare-workspace`
-2. `draft-report`
-3. `write-report`
-4. `write-summary`
+2. `search-web`
+3. `select-sources`
+4. `fetch-pages`
+5. `extract-evidence`
+6. `synthesize-findings`
+7. `write-report`
+8. `write-summary`
+9. `write-sources`
+10. `write-evidence`
 
 Progress is calculated from completed steps over total steps.
 
 In this phase that means:
 
 - 0% before step execution
-- 25% after step 1
-- 50% after step 2
-- 75% after step 3
-- 100% after step 4 and task completion
+- progress is derived from completed steps over the seven real runtime steps
+- 100% only after report, summary, source audit and evidence audit are written and the task is completed
 
 ## Execution Model
 
@@ -82,8 +98,31 @@ Current artifact kinds used by `research_report_basic`:
 Typical outputs:
 
 - sandbox workspace directory
+- `sources.json`
+- `evidence.json`
 - `report.md`
 - `summary.txt`
+
+`sources.json` is auditable and includes:
+
+- exact search query
+- provider id
+- `retrievedAt`
+- selected sources
+- discarded sources
+- selection/discard reasons
+- evidence limitations
+- `searchError` when relevant
+
+`evidence.json` is auditable and includes:
+
+- exact search query
+- provider id
+- `retrievedAt`
+- evidence level
+- fetched page records with `fetchStatus`, `httpStatus`, `contentType`, `finalUrl`
+- per-source evidence records
+- persisted limitations
 
 ## API Integration
 
@@ -123,6 +162,18 @@ Current runtime telemetry events:
 - `task_execution_cancelled`
 - `task_execution_completed`
 - `task_execution_failed`
+- `research_started`
+- `research_search_started`
+- `research_search_completed`
+- `research_sources_selected`
+- `research_page_fetch_started`
+- `research_page_fetch_completed`
+- `research_page_fetch_failed`
+- `research_evidence_extracted`
+- `research_evidence_saved`
+- `research_synthesis_started`
+- `research_report_written`
+- `research_failed`
 
 These events are stored separately from chat history and separately from Task Manager telemetry.
 
@@ -139,6 +190,7 @@ This phase does not include:
 - sub-agents or worker delegation
 - browser automation
 - desktop automation
+- full-page scraping or unlimited source-content extraction
 - checkpointed mid-step recovery
 - complex conflict resolution between concurrent runtime tasks
 - automatic rewriting of already completed artifacts after a late refinement

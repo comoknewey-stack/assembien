@@ -8,6 +8,14 @@ import { createCalendarTools } from '@assem/integration-calendar';
 import { createClockTimeTool } from '@assem/integration-clock-time';
 import { createLocalFilesTools } from '@assem/integration-local-files';
 import {
+  createWebSearchProvider,
+  createWebSearchTool
+} from '@assem/integration-web-search';
+import {
+  createWebPageReaderProvider,
+  createWebPageReaderTool
+} from '@assem/integration-web-page-reader';
+import {
   createSessionStorePaths,
   FileProfileMemoryBackend,
   FileSessionStore,
@@ -200,6 +208,22 @@ async function main() {
   const [listCalendarTool, createCalendarTool] = createCalendarTools();
   const [listSandboxTool, readSandboxTool, createSandboxTool] =
     createLocalFilesTools();
+  const webSearchProvider = createWebSearchProvider({
+    providerId: config.webSearchProvider,
+    apiKey: config.webSearchApiKey,
+    endpoint: config.webSearchEndpoint,
+    maxResults: config.webSearchMaxResults,
+    timeoutMs: config.webSearchTimeoutMs
+  });
+  const webPageReaderProvider = createWebPageReaderProvider({
+    enabled: config.webPageFetchEnabled,
+    timeoutMs: config.webPageFetchTimeoutMs,
+    maxSources: config.webPageMaxSources,
+    maxContentChars: config.webPageMaxContentChars,
+    minTextChars: config.webPageMinTextChars,
+    minTextDensity: config.webPageMinTextDensity,
+    maxLinkDensity: config.webPageMaxLinkDensity
+  });
 
   toolRegistry.register(createClockTimeTool());
   toolRegistry.register(listSandboxTool);
@@ -207,6 +231,8 @@ async function main() {
   toolRegistry.register(createSandboxTool);
   toolRegistry.register(listCalendarTool);
   toolRegistry.register(createCalendarTool);
+  toolRegistry.register(createWebSearchTool(webSearchProvider));
+  toolRegistry.register(createWebPageReaderTool(webPageReaderProvider));
 
   const sessionStore = new FileSessionStore(
     paths.sessionsFilePath,
@@ -276,14 +302,22 @@ async function main() {
       toolRegistry,
       modelRouter,
       sandboxRoot: config.sandboxRoot,
-      dataRoot: config.dataRoot
+      dataRoot: config.dataRoot,
+      researchPageFetchEnabled: config.webPageFetchEnabled,
+      researchPageFetchMaxSources: config.webPageMaxSources,
+      researchPageFetchTimeoutMs: config.webPageFetchTimeoutMs,
+      researchPageMaxContentChars: config.webPageMaxContentChars,
+      researchPageMinTextChars: config.webPageMinTextChars,
+      researchPageMinTextDensity: config.webPageMinTextDensity,
+      researchPageMaxLinkDensity: config.webPageMaxLinkDensity
     },
     {
       onEvent: async (event: TaskRuntimeEvent) => {
         const session = await sessionStore.getSession(event.task.sessionId);
         const invocation = resolveTaskRuntimeInvocation(event.task.metadata);
+        const isResearchEvent = event.type.startsWith('research_');
         const result =
-          event.type === 'task_execution_failed'
+          event.type === 'task_execution_failed' || event.type === 'research_failed'
             ? 'error'
             : event.type === 'task_execution_cancelled'
               ? 'rejected'
@@ -292,9 +326,15 @@ async function main() {
           id: crypto.randomUUID(),
           timestamp: event.timestamp,
           sessionId: event.task.sessionId,
-          providerId: invocation.providerId ?? 'task-runtime',
-          model: invocation.model ?? 'task-runtime',
-          channel: 'task_runtime',
+          providerId:
+            isResearchEvent && !invocation.providerId
+              ? 'web-search'
+              : invocation.providerId ?? 'task-runtime',
+          model:
+            isResearchEvent && !invocation.model
+              ? 'web-search'
+              : invocation.model ?? 'task-runtime',
+          channel: isResearchEvent ? 'research' : 'task_runtime',
           privacyMode: session?.activeMode.privacy ?? 'local_only',
           runtimeMode: session?.activeMode.runtime ?? 'sandbox',
           totalDurationMs: 0,
@@ -302,7 +342,7 @@ async function main() {
           confirmationRequired: false,
           result,
           errorMessage:
-            event.type === 'task_execution_failed'
+            event.type === 'task_execution_failed' || event.type === 'research_failed'
               ? event.task.failureReason ?? event.detail
               : undefined,
           toolCount: 0,
@@ -330,7 +370,8 @@ async function main() {
     memoryBackend,
     telemetry,
     taskManager,
-    taskRuntime
+    taskRuntime,
+    webSearchProvider
   });
 
   const scheduler = new BasicScheduler(
@@ -447,11 +488,21 @@ async function main() {
     const activeTask = sessionId
       ? await taskManager.getActiveTaskForSession(sessionId)
       : null;
+    const webSearchStatus = webSearchProvider.getStatus();
+    const webPageReaderStatus = webPageReaderProvider.getStatus();
 
     return {
       session,
       health,
       providerRuntime: buildProviderRuntime(sessionId, health, session),
+      webSearch: {
+        ...webSearchStatus,
+        privacyAllowsWeb: session ? session.activeMode.privacy !== 'local_only' : false
+      },
+      webPageReader: {
+        ...webPageReaderStatus,
+        privacyAllowsWeb: session ? session.activeMode.privacy !== 'local_only' : false
+      },
       taskManager: {
         activeTask,
         tasks: taskManagerTasks
@@ -981,7 +1032,9 @@ async function main() {
                 session,
                 text: body.objective,
                 objective: body.objective,
-                requestedTaskType: body.taskType
+                requestedTaskType: body.taskType,
+                webSearchAvailable: webSearchProvider.getStatus().configured,
+                privacyAllowsWebSearch: session.activeMode.privacy !== 'local_only'
               });
 
         if (!plannedTask.plan) {

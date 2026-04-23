@@ -18,6 +18,13 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
   - classify a supported objective
   - create a short persisted plan
   - attach real phases, steps and expected artifacts before runtime execution
+- Research v2 for `research_report_basic` when web search is allowed and configured:
+  - Brave Search provider behind a `WebSearchProvider` interface
+  - bounded page reading behind a `WebPageReaderProvider` interface
+  - persisted source selection/discard reasons plus source-level evidence state
+  - generated `sources.json`, `summary.txt`, `report.md` and `evidence.json` only when real selected sources and usable evidence exist
+  - clear refusal before task creation in `local_only` or when web search is not configured
+  - honest degradation to snippet-only synthesis when page reading is disabled or unreadable
 - Task Manager v1 plus Task Runtime / Executor v1 with one persisted active task per session, real phase execution, artifact registration and deterministic chat answers for status, progress, pause, resume and cancel.
 - Interrupt Handler v1 to distinguish active-task control, active-task refinements, clarifications and independent questions without losing the running task.
 - Persistent sessions, task state, action history, profile memory, scheduler state and telemetry.
@@ -118,7 +125,66 @@ Available variables:
 - `ASSEM_WHISPER_CPP_THREADS=4`
 - `ASSEM_WHISPER_CPP_BEAM_SIZE=5`
 - `ASSEM_WHISPER_CPP_INITIAL_PROMPT=ASSEM. Comandos frecuentes en espanol: que hora es, hora actual, fecha actual, crear archivo, crear carpeta, lista el sandbox, lee el archivo, confirma, cancela, Ollama, whisper.cpp.`
+- `ASSEM_WEB_SEARCH_PROVIDER=brave`
+- `ASSEM_WEB_SEARCH_API_KEY=`
+- `ASSEM_WEB_SEARCH_ENDPOINT=https://api.search.brave.com/res/v1/web/search`
+- `ASSEM_WEB_SEARCH_MAX_RESULTS=5`
+- `ASSEM_WEB_SEARCH_TIMEOUT_MS=10000`
+- `ASSEM_WEB_PAGE_FETCH_ENABLED=true`
+- `ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS=12000`
+- `ASSEM_WEB_PAGE_MAX_SOURCES=3`
+- `ASSEM_WEB_PAGE_MAX_CONTENT_CHARS=20000`
 - `ASSEM_ALLOWED_ORIGINS=http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost`
+
+## Research v2
+
+Research v2 upgrades `research_report_basic` from a local draft workflow into a bounded web-research workflow with safe page reading when policy allows it.
+
+Provider:
+
+- real provider: Brave Search API
+- abstraction: `WebSearchProvider`
+- tool id: `web-search.search`
+- default result limit: 5
+- absolute max result limit: 10
+
+Configure it in `.env`:
+
+```bash
+ASSEM_WEB_SEARCH_PROVIDER=brave
+ASSEM_WEB_SEARCH_API_KEY=your_brave_search_api_key
+ASSEM_WEB_SEARCH_ENDPOINT=https://api.search.brave.com/res/v1/web/search
+ASSEM_WEB_SEARCH_MAX_RESULTS=5
+ASSEM_WEB_SEARCH_TIMEOUT_MS=10000
+ASSEM_WEB_PAGE_FETCH_ENABLED=true
+ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS=12000
+ASSEM_WEB_PAGE_MAX_SOURCES=3
+ASSEM_WEB_PAGE_MAX_CONTENT_CHARS=20000
+```
+
+Behavior:
+
+- `local_only` always blocks research before creating a task.
+- If Brave is not configured, ASSEM answers clearly and does not create a fake research task.
+- If search fails or times out, the task is marked failed, `searchError` is persisted and no empty report artifacts are generated.
+- If results exist but no usable source can be selected, ASSEM fails the task without `report.md` or `summary.txt`.
+- If selected sources are useful but limited, ASSEM can generate a report only with an explicit evidence-limits section.
+- If page reading is enabled, ASSEM attempts to read a very small bounded subset of selected public pages and persists cleaned excerpts plus evidence notes.
+- If page reading is disabled or a page cannot be read safely, ASSEM degrades honestly to snippet-only evidence and says so in the report limitations.
+- Sources are deduplicated by normalized URL; invalid URLs are discarded.
+- `sources.json` includes the exact query, provider id, retrieval timestamp, selected sources, discarded sources and selection/discard reasons.
+- `evidence.json` persists source-level evidence, whether it came from snippets or page reads, and the fetched-page audit trail.
+- `que fuentes has encontrado` answers from persisted task state with title, domain and URL.
+- `que fuentes has leido de verdad`, `que paginas has podido leer`, `que fuentes usaste solo como snippet` and `que evidencia tienes` also answer from persisted task state.
+
+Privacy:
+
+- `prefer_local`, `balanced` and `cloud_allowed` may use web search if the provider is configured.
+- `local_only` never calls the web search provider.
+- Research v2 sends the search query to Brave Search and can fetch a very small number of selected public pages through plain HTTP GET.
+- It does not send local files, voice audio or profile memory.
+- Fetched web content is always treated as untrusted evidence, never as instructions. ASSEM does not obey page text like `ignore previous instructions`, `download`, `log in` or similar.
+- Reports can now combine snippet evidence and cleaned page-read evidence, but ASSEM still does not do browser automation, crawling, logins or scraping behind paywalls.
 
 ## Voice Setup
 
@@ -509,9 +575,14 @@ Current scope:
 - create a persisted plan before runtime execution starts
 - keep the plan honest to current runtime capabilities:
   - prepare local workspace
-  - generate initial draft
+  - search web sources
+  - select sources
+  - read a bounded subset of pages when enabled
+  - extract evidence
   - write `report.md`
   - write `summary.txt`
+  - write `sources.json`
+  - write `evidence.json`
 - answer plan questions such as:
   - `cual es el plan`
   - `que pasos vas a seguir`
@@ -533,9 +604,14 @@ Current scope:
 - non-blocking background execution from the local agent
 - real phases and steps:
   - prepare workspace
-  - generate draft report
+  - search web sources
+  - select useful sources
+  - read a bounded subset of pages when enabled
+  - extract evidence from snippets and/or page reads
   - write `report.md`
   - write `summary.txt`
+  - write `sources.json`
+  - write `evidence.json`
 - artifact registration in the Task Manager store
 - pause, resume and cancel routed through the runtime executor
 - restart-safe behavior:
@@ -580,6 +656,9 @@ Current refinements supported:
 - `hazlo en espanol`
 - `primero dame un resumen`
 - `anade una tabla`
+- `usa fuentes oficiales`
+- `no uses blogs`
+- `prioriza fuentes recientes`
 - simple focus changes such as `cambia el enfoque a riesgos`
 
 Current behavior limits:
@@ -735,6 +814,7 @@ Detailed Ollama instructions are documented in [docs/ollama-local-setup.md](docs
 - [docs/local-agent-api.md](docs/local-agent-api.md)
 - [docs/ollama-local-setup.md](docs/ollama-local-setup.md)
 - [docs/planner.md](docs/planner.md)
+- [docs/research.md](docs/research.md)
 - [docs/task-manager.md](docs/task-manager.md)
 - [docs/task-runtime.md](docs/task-runtime.md)
 - [docs/interrupt-handler.md](docs/interrupt-handler.md)

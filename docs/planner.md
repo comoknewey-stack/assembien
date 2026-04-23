@@ -30,7 +30,7 @@ Planner v1 does not yet plan:
 - desktop automation
 - arbitrary multi-tool workflows
 - generic file batch processing
-- open-ended autonomous research
+- open-ended autonomous research beyond the controlled Research v1 flow
 
 If a request does not fit `research_report_basic`, ASSEM answers honestly instead of fabricating a plan.
 
@@ -49,20 +49,30 @@ For `research_report_basic`, Planner v1 currently creates a real plan with:
 Current research plan structure:
 
 1. prepare local workspace
-2. generate initial draft
-3. write main report
-4. write executive summary
+2. search web sources through the configured provider
+3. select and deduplicate useful sources
+4. read a bounded subset of selected pages when enabled
+5. extract evidence from snippets and/or page reads
+6. synthesize findings from persisted evidence
+7. write main report
+8. write executive summary
+9. write source audit
+10. write evidence audit
 
 Expected artifacts:
 
 - local workspace folder
 - `report.md`
 - `summary.txt`
+- `sources.json`
+- `evidence.json`
 
 Current restrictions are honest to the runtime that exists today:
 
-- no real web browsing in this phase
-- no verified external citations
+- web search is only available outside `local_only` and only when configured
+- Research v2 uses Brave Search plus a bounded safe page-reader step when enabled
+- fetched page content is treated as untrusted evidence, never as instructions
+- no browser automation, aggressive scraping, crawling or full browsing in this phase
 - outputs stay inside the local sandbox
 
 ## Persistence
@@ -99,8 +109,13 @@ When the user asks for a supported open task, the orchestrator now:
 Examples that Planner v1 handles in this phase:
 
 - `hazme un informe sobre riesgos operativos`
+- `investiga el consumo de galletas en Islandia`
+- `busca informacion sobre X y prepara un informe`
 - `abre una tarea para preparar el informe semanal`
 - `prepare a report about operating costs`
+
+If the session is `local_only`, Planner v1 rejects web research before task creation.
+If no web search provider is configured, Planner v1 rejects the request instead of creating an empty research task.
 
 If the user asks:
 
@@ -120,6 +135,9 @@ Current supported refinements:
 - `hazlo en espanol`
 - `primero dame un resumen`
 - `anade una tabla`
+- `usa fuentes oficiales`
+- `no uses blogs`
+- `prioriza fuentes recientes`
 - simple focus shifts such as `cambia el enfoque a riesgos`
 
 Current behavior:

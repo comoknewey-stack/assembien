@@ -4,7 +4,7 @@ import type { AssemTask, SessionState, TaskRefinement } from '@assem/shared-type
 
 import { DeterministicTaskPlanner } from './index';
 
-function createSession(): SessionState {
+function createSession(privacy: SessionState['activeMode']['privacy'] = 'balanced'): SessionState {
   return {
     sessionId: 'session-plan',
     createdAt: new Date().toISOString(),
@@ -15,7 +15,7 @@ function createSession(): SessionState {
     temporaryOverrides: [],
     calendarEvents: [],
     activeMode: {
-      privacy: 'local_only',
+      privacy,
       runtime: 'sandbox'
     },
     settings: {
@@ -29,7 +29,8 @@ function createTaskWithPlan(): AssemTask {
   const planner = new DeterministicTaskPlanner();
   const result = planner.createPlan({
     session: createSession(),
-    text: 'hazme un informe sobre costes operativos'
+    text: 'hazme un informe sobre costes operativos',
+    webSearchAvailable: true
   });
   const plan = result.plan!;
 
@@ -39,8 +40,8 @@ function createTaskWithPlan(): AssemTask {
     objective: plan.objective,
     status: 'active',
     progressPercent: 25,
-    currentPhase: 'Generar borrador inicial',
-    currentStepId: 'draft-report',
+    currentPhase: 'Buscar fuentes web',
+    currentStepId: 'search-web',
     steps: plan.steps.map((step, index) => ({
       id: step.id,
       label: step.label,
@@ -68,7 +69,8 @@ describe('DeterministicTaskPlanner', () => {
   it('creates a valid research_report_basic plan from an open report request', () => {
     const result = planner.createPlan({
       session: createSession(),
-      text: 'hazme un informe sobre riesgos operativos'
+      text: 'hazme un informe sobre riesgos operativos',
+      webSearchAvailable: true
     });
 
     expect(result.accepted).toBe(true);
@@ -78,14 +80,22 @@ describe('DeterministicTaskPlanner', () => {
     });
     expect(result.plan?.steps.map((step) => step.id)).toEqual([
       'prepare-workspace',
-      'draft-report',
+      'search-web',
+      'select-sources',
+      'fetch-pages',
+      'extract-evidence',
+      'synthesize-findings',
       'write-report',
-      'write-summary'
+      'write-summary',
+      'write-sources',
+      'write-evidence'
     ]);
     expect(result.plan?.expectedArtifacts.map((artifact) => artifact.label)).toEqual([
       'Carpeta de trabajo',
       'Informe principal',
-      'Resumen ejecutivo'
+      'Resumen ejecutivo',
+      'Auditoria de fuentes',
+      'Auditoria de evidencia'
     ]);
   });
 
@@ -93,7 +103,8 @@ describe('DeterministicTaskPlanner', () => {
     const result = planner.createPlan({
       session: createSession(),
       text: 'abre una tarea para preparar el informe semanal',
-      objective: 'preparar el informe semanal'
+      objective: 'preparar el informe semanal',
+      webSearchAvailable: true
     });
 
     expect(result.accepted).toBe(true);
@@ -105,7 +116,8 @@ describe('DeterministicTaskPlanner', () => {
     const result = planner.createPlan({
       session: createSession(),
       text: 'abre una tarea para organizar archivos del proyecto',
-      objective: 'organizar archivos del proyecto'
+      objective: 'organizar archivos del proyecto',
+      webSearchAvailable: true
     });
 
     expect(result.accepted).toBe(false);
@@ -130,10 +142,38 @@ describe('DeterministicTaskPlanner', () => {
     expect(result.accepted).toBe(true);
     expect(result.plan?.steps.map((step) => step.id)).toEqual([
       'prepare-workspace',
-      'draft-report',
+      'search-web',
+      'select-sources',
+      'fetch-pages',
+      'extract-evidence',
+      'synthesize-findings',
       'write-summary',
-      'write-report'
+      'write-report',
+      'write-sources',
+      'write-evidence'
     ]);
+  });
+
+  it('blocks research in local_only before creating a plan', () => {
+    const result = planner.createPlan({
+      session: createSession('local_only'),
+      text: 'hazme un informe sobre riesgos operativos',
+      webSearchAvailable: true
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBe('privacy_blocks_web_search');
+  });
+
+  it('blocks research when web search is not configured', () => {
+    const result = planner.createPlan({
+      session: createSession(),
+      text: 'hazme un informe sobre riesgos operativos',
+      webSearchAvailable: false
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBe('web_search_unconfigured');
   });
 
   it('asks for clarification when the refinement is too generic to apply safely', () => {
