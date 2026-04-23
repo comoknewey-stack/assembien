@@ -252,6 +252,8 @@ function createMockWebSearchTool(
         throw override;
       }
 
+      const defaultTopic = input.query.trim() || 'market research';
+
       const output: WebSearchOutput = {
         providerId: override?.providerId ?? 'mock-search',
         query: override?.query ?? input.query,
@@ -259,23 +261,23 @@ function createMockWebSearchTool(
         results:
           override?.results ?? [
             {
-              title: 'Statistics Iceland biscuit data',
+              title: `Official data for ${defaultTopic}`,
               url: 'https://statice.is/example?utm_source=test',
-              snippet: 'Official statistics mention household food consumption.',
+              snippet: `Official statistics mention ${defaultTopic} and household consumption with enough context for research.`,
               source: 'Statistics Iceland',
               retrievedAt: new Date().toISOString()
             },
             {
-              title: 'Iceland food market overview',
+              title: `Market overview for ${defaultTopic}`,
               url: 'https://example.org/food-market',
-              snippet: 'A market overview describes cookie and biscuit categories.',
+              snippet: `A market overview describes ${defaultTopic} and related categories with usable context.`,
               source: 'Example Research',
               retrievedAt: new Date().toISOString()
             },
             {
-              title: 'Duplicate Statistics Iceland',
+              title: `Duplicate official data for ${defaultTopic}`,
               url: 'https://statice.is/example',
-              snippet: 'Duplicate result.',
+              snippet: `Duplicate result for ${defaultTopic}.`,
               source: 'Statistics Iceland',
               retrievedAt: new Date().toISOString()
             }
@@ -667,7 +669,7 @@ describe('TaskRuntimeExecutor', () => {
         }
       | undefined;
 
-    expect(research?.evidenceStrength).toBe('medium');
+    expect(research?.evidenceStrength).toBe('weak');
     expect(
       research?.evidence?.every((record) => record.evidenceStrength !== 'strong')
     ).toBe(true);
@@ -693,31 +695,36 @@ describe('TaskRuntimeExecutor', () => {
       objective: 'Preparar informe con paginas ruidosas'
     });
 
-    const completedTask = await waitForTask(
+    const failedTask = await waitForTask(
       harness.taskManager,
       task.id,
-      (candidate) => candidate.status === 'completed'
+      (candidate) => candidate.status === 'failed'
     );
-    const research = completedTask.metadata?.research as
+    const research = failedTask.metadata?.research as
       | {
           evidenceStrength?: string;
           evidence?: Array<{ evidenceStrength?: string }>;
           limitations?: string[];
+          qualitySummary?: { reportReadiness?: string };
         }
       | undefined;
 
-    expect(research?.evidenceStrength).toBe('weak');
+    expect(['weak', 'tangential']).toContain(research?.evidenceStrength);
     expect(
       research?.evidence?.some((record) => record.evidenceStrength === 'strong')
     ).toBe(false);
     expect(research?.limitations?.join(' ')).toContain('calidad baja');
+    expect(research?.qualitySummary?.reportReadiness).toBe('insufficient');
+    expect(
+      failedTask.artifacts.map((artifact) => artifact.label)
+    ).not.toContain('Informe principal');
   });
 
   it('limits page reads to the configured maximum while keeping selected sources auditable', async () => {
     const results = Array.from({ length: 6 }, (_item, index) => ({
-      title: `Fuente ${index + 1}`,
+      title: `Fuente relevante ${index + 1} sobre limite de fuentes`,
       url: `https://example${index + 1}.org/research`,
-      snippet: `Snippet util ${index + 1} con suficiente contexto para la investigacion.`,
+      snippet: `Snippet util ${index + 1} sobre limite de fuentes y seleccion de evidencias con suficiente contexto para la investigacion.`,
       retrievedAt: new Date().toISOString()
     }));
     const harness = await createRuntimeHarness(

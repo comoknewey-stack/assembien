@@ -203,6 +203,33 @@ function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function buildExcerpt(text: string, maxChars = 1_500): string {
+  const sentences = text
+    .split(/(?<=[.!?])\s+/g)
+    .map((sentence) => collapseWhitespace(sentence))
+    .filter((sentence) => sentence.length >= 35);
+  const selected: string[] = [];
+  let length = 0;
+
+  for (const sentence of sentences) {
+    if (length + sentence.length > maxChars && selected.length > 0) {
+      break;
+    }
+
+    selected.push(sentence);
+    length += sentence.length;
+    if (selected.length >= 3 || length >= maxChars) {
+      break;
+    }
+  }
+
+  if (selected.length === 0) {
+    return text.slice(0, maxChars);
+  }
+
+  return selected.join(' ').slice(0, maxChars);
+}
+
 function stripTagsPreservingSpacing(html: string): string {
   return decodeHtmlEntities(
     html
@@ -293,10 +320,35 @@ function estimateTechnicalNoiseRatio(text: string): number {
   const braceNoise = (text.match(/[{}[\];<>]/g) ?? []).length;
   const technicalTokens =
     (text.match(
-      /\b(?:schema|json|javascript|stylesheet|font-family|display|flex|var|const|function|return|@media|color:|padding:|margin:)\b/gi
+      /\b(?:schema|json|javascript|stylesheet|font-family|display|flex|var|const|function|return|@media|color:|padding:|margin:|window\.__|__next_data__|schema\.org|@context|@type|tailwind|webpack|chunk|hydrate)\b/gi
     ) ?? []).length + braceNoise / 4;
 
   return Math.max(0, Math.min(1, technicalTokens / words));
+}
+
+function estimateBoilerplateNoiseRatio(text: string): number {
+  const words = text.split(/\s+/g).filter(Boolean).length || 1;
+  const noiseTokens =
+    (text.match(
+      /\b(?:cookie|cookies|privacy|policy|policies|terms|accept|consent|subscribe|newsletter|share|comments?|related|recommended|all rights reserved|follow us|sign up|iniciar sesion|suscribete|compartir|comentarios?)\b/gi
+    ) ?? []).length;
+
+  return Math.max(0, Math.min(1, noiseTokens / words));
+}
+
+function estimateEditorialSignal(text: string): number {
+  const sentences = text
+    .split(/(?<=[.!?])\s+/g)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 30);
+  const paragraphs = text
+    .split(/\n{2,}/g)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length >= 80);
+  const sentenceScore = Math.min(1, sentences.length / 5);
+  const paragraphScore = Math.min(1, paragraphs.length / 3);
+
+  return Math.max(0, Math.min(1, sentenceScore * 0.6 + paragraphScore * 0.4));
 }
 
 interface ExtractedReadableText {
@@ -315,6 +367,8 @@ function classifyReadQuality(
   textDensity: number,
   linkDensity: number,
   technicalNoiseRatio: number,
+  boilerplateNoiseRatio: number,
+  editorialSignal: number,
   hintedCandidate: boolean,
   minTextChars: number,
   minTextDensity: number,
@@ -329,15 +383,19 @@ function classifyReadQuality(
   const densityScore = Math.min(1, textDensity / Math.max(minTextDensity * 2.2, 0.01));
   const linkScore = Math.max(0, 1 - linkDensity / Math.max(maxLinkDensity * 1.4, 0.05));
   const noiseScore = Math.max(0, 1 - technicalNoiseRatio / 0.45);
+  const boilerplateScore = Math.max(0, 1 - boilerplateNoiseRatio / 0.3);
+  const editorialScore = Math.max(0, Math.min(1, editorialSignal));
   const hintedBonus = hintedCandidate ? 0.06 : 0;
   const qualityScore = Math.max(
     0,
     Math.min(
       1,
-      lengthScore * 0.34 +
-        densityScore * 0.28 +
-        linkScore * 0.2 +
-        noiseScore * 0.18 +
+      lengthScore * 0.28 +
+        densityScore * 0.22 +
+        linkScore * 0.14 +
+        noiseScore * 0.16 +
+        boilerplateScore * 0.1 +
+        editorialScore * 0.1 +
         hintedBonus
     )
   );
@@ -354,16 +412,24 @@ function classifyReadQuality(
   if (technicalNoiseRatio > 0.22) {
     qualityNotes.push('technical_noise_detected');
   }
+  if (boilerplateNoiseRatio > 0.14) {
+    qualityNotes.push('boilerplate_noise_detected');
+  }
+  if (editorialSignal < 0.22) {
+    qualityNotes.push('low_editorial_signal');
+  }
   if (hintedCandidate) {
     qualityNotes.push('article_like_container_selected');
   }
 
   if (
     qualityScore >= 0.74 &&
-    textChars >= minTextChars * 2 &&
+    textChars >= Math.max(minTextChars + 80, Math.round(minTextChars * 1.5)) &&
     textDensity >= minTextDensity &&
     linkDensity <= maxLinkDensity &&
-    technicalNoiseRatio <= 0.18
+    technicalNoiseRatio <= 0.18 &&
+    boilerplateNoiseRatio <= 0.1 &&
+    editorialSignal >= 0.32
   ) {
     qualityNotes.push('readable_editorial_content');
     return {
@@ -377,7 +443,8 @@ function classifyReadQuality(
     qualityScore >= 0.5 &&
     textChars >= minTextChars &&
     textDensity >= minTextDensity * 0.8 &&
-    technicalNoiseRatio <= 0.32
+    technicalNoiseRatio <= 0.32 &&
+    editorialSignal >= 0.16
   ) {
     qualityNotes.push('usable_but_partially_noisy_content');
     return {
@@ -415,7 +482,7 @@ function extractReadableText(
     const text = collapseWhitespace(raw);
     return {
       text,
-      excerpt: text.slice(0, 1_500),
+      excerpt: buildExcerpt(text),
       textDensity: 1,
       linkDensity: 0,
       qualityScore: text.length >= minTextChars ? 0.78 : 0.4,
@@ -449,18 +516,21 @@ function extractReadableText(
       continue;
     }
 
-    const excerpt = stripped.slice(0, 1_500);
     const textChars = stripped.replace(/\s/g, '').length;
     const htmlChars = Math.max(candidate.html.length, 1);
     const linkTextChars = countLinkTextCharacters(candidate.html);
     const textDensity = Math.max(0, Math.min(1, textChars / htmlChars));
     const linkDensity = Math.max(0, Math.min(1, linkTextChars / Math.max(textChars, 1)));
     const technicalNoiseRatio = estimateTechnicalNoiseRatio(stripped);
+    const boilerplateNoiseRatio = estimateBoilerplateNoiseRatio(stripped);
+    const editorialSignal = estimateEditorialSignal(stripped);
     const quality = classifyReadQuality(
       textChars,
       textDensity,
       linkDensity,
       technicalNoiseRatio,
+      boilerplateNoiseRatio,
+      editorialSignal,
       candidate.hinted,
       minTextChars,
       minTextDensity,
@@ -470,7 +540,7 @@ function extractReadableText(
     const extractedCandidate: ExtractedReadableText = {
       title,
       text: stripped,
-      excerpt,
+      excerpt: buildExcerpt(stripped),
       textDensity,
       linkDensity,
       qualityScore: quality.qualityScore,

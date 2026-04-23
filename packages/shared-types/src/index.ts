@@ -223,7 +223,9 @@ export type TaskStatusQueryKind =
   | 'weak_sources'
   | 'best_source'
   | 'report_limitations'
+  | 'evidence_sufficiency'
   | 'snippet_sources'
+  | 'snippet_dependency'
   | 'discarded_sources'
   | 'evidence'
   | 'report_location'
@@ -566,6 +568,29 @@ export type ResearchEvidenceRelevance =
   | 'supporting'
   | 'tangential'
   | 'insufficient';
+export type ResearchReportReadiness = 'solid' | 'limited' | 'insufficient';
+
+export interface ResearchQualitySummary {
+  selectedSourcesCount: number;
+  readSourcesCount: number;
+  highQualityReadCount: number;
+  mediumQualityReadCount: number;
+  lowQualityReadCount: number;
+  snippetOnlyCount: number;
+  tangentialSourcesCount: number;
+  strongEvidenceCount: number;
+  mediumEvidenceCount: number;
+  weakEvidenceCount: number;
+  tangentialEvidenceCount: number;
+  insufficientEvidenceCount: number;
+  dominantBasis: 'page_read' | 'snippet_only' | 'mixed' | 'none';
+  reportReadiness: ResearchReportReadiness;
+  hasSufficientBasis: boolean;
+  readinessReason: string;
+  snippetDominant: boolean;
+  limitationsRequired: boolean;
+  bestSourceId?: string;
+}
 
 export interface ResearchSourceRecord extends WebSearchResult {
   id: string;
@@ -650,6 +675,8 @@ export interface ResearchTaskMetadata {
   evidenceSavedAt?: string;
   evidenceLevel?: ResearchEvidenceLevel;
   evidenceStrength?: ResearchEvidenceStrength;
+  qualitySummary?: ResearchQualitySummary;
+  reportReadiness?: ResearchReportReadiness;
 }
 
 export interface WebSearchRuntimeStatus {

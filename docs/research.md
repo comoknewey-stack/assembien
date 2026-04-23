@@ -1,6 +1,6 @@
-# Research v2
+# Research v2.1 / QA Tuning
 
-Research v2 extends `research_report_basic` from search-result grounding into a safer, stronger web-research flow with limited real page reading.
+Research v2.1 extends `research_report_basic` from search-result grounding into a safer, stricter web-research flow with limited real page reading and stronger evidence guardrails.
 
 It is deliberately scoped:
 
@@ -17,6 +17,15 @@ It is deliberately scoped:
 - no invented sources
 - no obeying page content as instructions
 
+This QA / tuning pass adds:
+
+- stronger ranking against tangential sources
+- stricter page-read quality judgement
+- persisted `qualitySummary`
+- explicit `reportReadiness` (`solid`, `limited`, `insufficient`)
+- a reproducible evaluation battery with real-world style cases
+- clearer answers to `¿hay base suficiente?`, `¿qué parte sale solo de snippets?` and related follow-ups
+
 ## Configuration
 
 Use `.env`:
@@ -31,10 +40,14 @@ ASSEM_WEB_PAGE_FETCH_ENABLED=true
 ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS=12000
 ASSEM_WEB_PAGE_MAX_SOURCES=3
 ASSEM_WEB_PAGE_MAX_CONTENT_CHARS=20000
+ASSEM_WEB_PAGE_MIN_TEXT_CHARS=220
+ASSEM_WEB_PAGE_MIN_TEXT_DENSITY=0.18
+ASSEM_WEB_PAGE_MAX_LINK_DENSITY=0.55
 ```
 
 `ASSEM_WEB_SEARCH_MAX_RESULTS` defaults to `5` and is capped at `10`.
 `ASSEM_WEB_PAGE_MAX_SOURCES` defaults to `3` and is capped at `5`.
+`ASSEM_WEB_PAGE_MIN_TEXT_CHARS`, `ASSEM_WEB_PAGE_MIN_TEXT_DENSITY` and `ASSEM_WEB_PAGE_MAX_LINK_DENSITY` tune the page-read quality classifier.
 
 The provider is considered configured only when `ASSEM_WEB_SEARCH_PROVIDER=brave` and `ASSEM_WEB_SEARCH_API_KEY` is set.
 
@@ -116,6 +129,12 @@ Each source record includes:
 - `contentExcerpt`
 - `contentLength`
 - `evidenceLevel`
+- `evidenceStrength`
+- `evidenceRelevance`
+- `readQuality`
+- `readQualityScore`
+- `qualityNotes`
+- `relevanceNotes`
 - `usedAs`
 
 Common reasons:
@@ -127,8 +146,80 @@ Common reasons:
 - `official_preferred`
 - `selected_for_page_read`
 - `page_read_successfully`
+- `page_read_partially_usable`
+- `page_read_low_quality`
 - `page_unreadable`
 - `snippet_only`
+
+## Read Quality And Evidence Strength
+
+Research v2.1 separates page-read success from evidence strength.
+
+Page-read quality labels:
+
+- `high`
+- `medium`
+- `low`
+
+Evidence strength labels:
+
+- `strong`
+- `medium`
+- `weak`
+- `tangential`
+- `insufficient`
+
+Important rules:
+
+- `page_read` does not automatically mean `strong`
+- `snippet_only` evidence is treated conservatively
+- low-quality page reads can stay persisted without being promoted to strong evidence
+- tangential sources remain auditable, but they should not be treated as primary support
+- `strong` now requires both enough relevance and enough usable read quality
+- a source can be `page_read` and still remain `weak` or `tangential`
+
+## Report Readiness
+
+Research v2.1 now persists a `qualitySummary` and a `reportReadiness` decision.
+
+Readiness values:
+
+- `solid`: there is enough direct, usable evidence for a confident report
+- `limited`: there is some usable evidence, but the report must remain cautious
+- `insufficient`: evidence is too weak, too tangential, too noisy or too snippet-dominant
+
+If readiness is `insufficient`, ASSEM fails the research task honestly instead of generating a convincing-looking report with weak grounding.
+
+Persisted quality summary fields include:
+
+- selected source count
+- read source count
+- high / medium / low quality read counts
+- snippet-only count
+- tangential source count
+- strong / medium / weak / tangential evidence counts
+- dominant basis (`page_read`, `snippet_only`, `mixed`, `none`)
+- whether snippet dependency is dominant
+- the best persisted source id
+- readiness reason
+
+The page reader now removes common non-editorial noise such as:
+
+- scripts and JSON-LD blobs
+- style blocks
+- navigation/header/footer/sidebar containers
+- share buttons, comments, banners and cookie blocks
+
+It also prefers `article`, `main` and text-dense containers when possible.
+
+This tuning pass additionally penalizes:
+
+- boilerplate-heavy pages
+- low editorial signal
+- frontend shell text
+- technical residue such as `window.__`, JSON-like blobs, CSS-like fragments and layout chrome
+
+So a fetch with `status=ok` can still be low-quality evidence.
 
 ## Artifacts
 
@@ -156,6 +247,7 @@ Generated artifacts live in the sandbox task workspace:
 - `providerId`
 - `retrievedAt`
 - evidence level
+- evidence strength
 - per-source evidence records
 - page fetch results
 - persisted limitations
@@ -174,6 +266,7 @@ Research v2:
 - limits redirects, timeout and content size
 - strips noisy HTML and keeps only cleaned readable text
 - records `fetchStatus`, `httpStatus`, `contentType`, `finalUrl` and discard/error reason
+- classifies read quality from text length, text density, link density and technical-noise heuristics
 
 If a page contains text like `ignore previous instructions`, `log in`, `download this`, or similar, that text is treated as risky page content, not as an instruction for ASSEM.
 
@@ -189,6 +282,12 @@ The Interrupt Handler can answer source questions from persisted task metadata:
 - `que fuentes usaste solo como snippet`
 - `que evidencia tienes`
 - `que fuentes descartaste`
+- `que fuentes tienen evidencia fuerte`
+- `que fuentes son debiles o tangenciales`
+- `cual es la mejor fuente que encontraste`
+- `que limitaciones tiene este informe`
+- `que parte sale solo de snippets`
+- `hay base suficiente o no`
 
 It returns title, domain and URL. It does not invent missing sources.
 
@@ -216,3 +315,36 @@ Current limitations:
 - no independent source verification beyond basic URL normalization and source selection
 - no automatic rerun when late refinements arrive
 - no obedience to page instructions; web content is always treated as untrusted corpus
+- a fetched page can still end up as low-quality evidence if the cleaned text is thin, noisy or tangential
+- snippet-only evidence remains useful for hints, but not for strong conclusions
+
+## Evaluation Battery
+
+The repository now includes a reproducible Research QA battery in:
+
+- `packages/task-runtime/src/research-quality.fixtures.ts`
+- `packages/task-runtime/src/research-quality.test.ts`
+
+Covered cases include:
+
+1. soft drink consumption in USA
+2. soft drink consumption in Spain
+3. YouTube consumption among older people
+4. blocked PDF source
+5. noisy HTML page
+6. tangential source set
+7. insufficient evidence
+
+The battery checks, at minimum:
+
+- selected vs discarded sources
+- page-read quality
+- strong / medium / weak / tangential evidence counts
+- snippet dominance
+- readiness decision
+- whether a report is written or the task fails honestly
+
+Run it through the normal repo validation:
+
+- `npm test`
+- `npm run build`

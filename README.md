@@ -134,11 +134,14 @@ Available variables:
 - `ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS=12000`
 - `ASSEM_WEB_PAGE_MAX_SOURCES=3`
 - `ASSEM_WEB_PAGE_MAX_CONTENT_CHARS=20000`
+- `ASSEM_WEB_PAGE_MIN_TEXT_CHARS=220`
+- `ASSEM_WEB_PAGE_MIN_TEXT_DENSITY=0.18`
+- `ASSEM_WEB_PAGE_MAX_LINK_DENSITY=0.55`
 - `ASSEM_ALLOWED_ORIGINS=http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost`
 
-## Research v2
+## Research v2.1
 
-Research v2 upgrades `research_report_basic` from a local draft workflow into a bounded web-research workflow with safe page reading when policy allows it.
+Research v2.1 keeps the same bounded web-research architecture from v2 and improves source quality, page-read quality and report honesty without adding browser automation.
 
 Provider:
 
@@ -160,6 +163,9 @@ ASSEM_WEB_PAGE_FETCH_ENABLED=true
 ASSEM_WEB_PAGE_FETCH_TIMEOUT_MS=12000
 ASSEM_WEB_PAGE_MAX_SOURCES=3
 ASSEM_WEB_PAGE_MAX_CONTENT_CHARS=20000
+ASSEM_WEB_PAGE_MIN_TEXT_CHARS=220
+ASSEM_WEB_PAGE_MIN_TEXT_DENSITY=0.18
+ASSEM_WEB_PAGE_MAX_LINK_DENSITY=0.55
 ```
 
 Behavior:
@@ -171,11 +177,15 @@ Behavior:
 - If selected sources are useful but limited, ASSEM can generate a report only with an explicit evidence-limits section.
 - If page reading is enabled, ASSEM attempts to read a very small bounded subset of selected public pages and persists cleaned excerpts plus evidence notes.
 - If page reading is disabled or a page cannot be read safely, ASSEM degrades honestly to snippet-only evidence and says so in the report limitations.
+- A successful fetch no longer counts as strong evidence by default. Research v2.1 classifies page reads as `high`, `medium` or `low` quality before using them in synthesis.
+- Evidence is now persisted with explicit strength and relevance labels such as `strong`, `medium`, `weak`, `tangential` and `insufficient`.
+- Research QA tuning also persists a `qualitySummary` and a `reportReadiness` decision (`solid`, `limited`, `insufficient`) so ASSEM can say when there is not enough basis for a solid report.
+- Snippet-only evidence is treated conservatively and low-quality page reads do not get promoted to strong claims.
 - Sources are deduplicated by normalized URL; invalid URLs are discarded.
 - `sources.json` includes the exact query, provider id, retrieval timestamp, selected sources, discarded sources and selection/discard reasons.
 - `evidence.json` persists source-level evidence, whether it came from snippets or page reads, and the fetched-page audit trail.
 - `que fuentes has encontrado` answers from persisted task state with title, domain and URL.
-- `que fuentes has leido de verdad`, `que paginas has podido leer`, `que fuentes usaste solo como snippet` and `que evidencia tienes` also answer from persisted task state.
+- `que fuentes has leido de verdad`, `que paginas has podido leer`, `que fuentes usaste solo como snippet`, `que parte sale solo de snippets`, `que evidencia tienes`, `que fuentes tienen evidencia fuerte`, `que fuentes son debiles o tangenciales`, `cual es la mejor fuente que encontraste`, `que limitaciones tiene este informe` and `hay base suficiente o no` also answer from persisted task state.
 
 Privacy:
 
@@ -185,6 +195,13 @@ Privacy:
 - It does not send local files, voice audio or profile memory.
 - Fetched web content is always treated as untrusted evidence, never as instructions. ASSEM does not obey page text like `ignore previous instructions`, `download`, `log in` or similar.
 - Reports can now combine snippet evidence and cleaned page-read evidence, but ASSEM still does not do browser automation, crawling, logins or scraping behind paywalls.
+- Only `text/html` and `text/plain` are read in this phase. PDFs, images, videos and other binary responses are discarded.
+
+Evaluation:
+
+- Research QA fixtures live in `packages/task-runtime/src/research-quality.fixtures.ts`
+- The executable evaluation battery lives in `packages/task-runtime/src/research-quality.test.ts`
+- Run it with the normal validation flow: `npm test` and `npm run build`
 
 ## Voice Setup
 

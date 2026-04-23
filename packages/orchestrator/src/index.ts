@@ -363,7 +363,7 @@ function isTaskCompletionRequest(text: string): boolean {
 
 function isTaskStateArtifactRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /^(?:donde esta el informe|donde esta el reporte|donde quedo el informe|donde guardaste el informe|donde se guardo el informe|ruta del informe|donde esta report md|que fuentes has encontrado|que fuentes encontraste|que fuentes estas usando|cuantas fuentes tienes|fuentes encontradas|que fuentes has leido de verdad|que paginas has podido leer|que paginas leiste|fuentes leidas|paginas leidas|que fuentes tienen evidencia fuerte|que fuentes son fuertes|cual es la mejor fuente|cual es la mejor fuente que encontraste|que fuentes son debiles o tangenciales|que fuentes son debiles|que fuentes son tangenciales|que limitaciones tiene este informe|que limitaciones tiene la investigacion|cuales son las limitaciones|que fuentes usaste solo como snippet|fuentes solo snippet|que fuentes son solo snippet|que fuentes descartaste|por que descartaste esa fuente|fuentes descartadas|que evidencia tienes|que evidencia has extraido|evidencia disponible|que artefactos se han generado|que artefactos generaste|que archivos has generado|que archivos generaste|artefactos generados|donde esta la carpeta|donde esta el workspace|donde esta la carpeta de trabajo|ruta de la carpeta|ruta del workspace|workspace|por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|where is the report|what sources have you found|what sources are you using|how many sources do you have|what sources did you actually read|what pages could you read|what pages did you read|what sources have strong evidence|which sources are strong|what is the best source|what is the best source you found|what sources are weak or tangential|what limitations does this report have|what are the limitations|what sources are snippet only|which sources are snippet only|what sources did you discard|why did you discard that source|discarded sources|what evidence do you have|what evidence did you extract|what artifacts were generated|where is the workspace|why did it fail|what happened|what was the error)$/.test(
+  return /^(?:donde esta el informe|donde esta el reporte|donde quedo el informe|donde guardaste el informe|donde se guardo el informe|ruta del informe|donde esta report md|que fuentes has encontrado|que fuentes encontraste|que fuentes estas usando|cuantas fuentes tienes|fuentes encontradas|que fuentes has leido de verdad|que paginas has podido leer|que paginas leiste|fuentes leidas|paginas leidas|que fuentes tienen evidencia fuerte|que fuentes son fuertes|cual es la mejor fuente|cual es la mejor fuente que encontraste|que fuentes son debiles o tangenciales|que fuentes son debiles|que fuentes son tangenciales|que limitaciones tiene este informe|que limitaciones tiene la investigacion|cuales son las limitaciones|que fuentes usaste solo como snippet|fuentes solo snippet|que fuentes son solo snippet|que parte sale solo de snippets|que parte del informe sale solo de snippets|hay base suficiente o no|hay base suficiente|hay base solida|hay base real|que fuentes descartaste|por que descartaste esa fuente|fuentes descartadas|que evidencia tienes|que evidencia has extraido|evidencia disponible|que artefactos se han generado|que artefactos generaste|que archivos has generado|que archivos generaste|artefactos generados|donde esta la carpeta|donde esta el workspace|donde esta la carpeta de trabajo|ruta de la carpeta|ruta del workspace|workspace|por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|where is the report|what sources have you found|what sources are you using|how many sources do you have|what sources did you actually read|what pages could you read|what pages did you read|what sources have strong evidence|which sources are strong|what is the best source|what is the best source you found|what sources are weak or tangential|what limitations does this report have|what are the limitations|what sources are snippet only|which sources are snippet only|what part of the report is snippet only|what part comes only from snippets|is there enough basis|is there enough evidence|is there a solid basis|what sources did you discard|why did you discard that source|discarded sources|what evidence do you have|what evidence did you extract|what artifacts were generated|where is the workspace|why did it fail|what happened|what was the error)$/.test(
     normalized
   );
 }
@@ -2436,6 +2436,13 @@ export class AssemOrchestrator {
     );
   }
 
+  private getResearchQualitySummary(task: AssemTask): Record<string, unknown> | null {
+    const summary = this.getResearchRecord(task)?.qualitySummary;
+    return summary && typeof summary === 'object'
+      ? (summary as Record<string, unknown>)
+      : null;
+  }
+
   private formatResearchSource(
     source: Record<string, unknown>,
     index: number
@@ -2552,8 +2559,12 @@ export class AssemOrchestrator {
         return this.renderTaskBestSource(task, language);
       case 'report_limitations':
         return this.renderTaskLimitations(task, language);
+      case 'evidence_sufficiency':
+        return this.renderTaskEvidenceSufficiency(task, language);
       case 'snippet_sources':
         return this.renderTaskSnippetSources(task, language);
+      case 'snippet_dependency':
+        return this.renderTaskSnippetDependency(task, language);
       case 'discarded_sources':
         return this.renderTaskDiscardedSources(task, language);
       case 'evidence':
@@ -2860,20 +2871,29 @@ export class AssemOrchestrator {
     task: AssemTask,
     language: SupportedLanguage
   ): string {
-    const sources = this.getResearchSources(task, 'sourcesSelected').slice().sort((left, right) => {
-      const leftStrength = ['insufficient', 'tangential', 'weak', 'medium', 'strong'].indexOf(
-        String(left.evidenceStrength ?? 'insufficient')
-      );
-      const rightStrength = ['insufficient', 'tangential', 'weak', 'medium', 'strong'].indexOf(
-        String(right.evidenceStrength ?? 'insufficient')
-      );
-      if (leftStrength !== rightStrength) {
-        return rightStrength - leftStrength;
-      }
+    const sources = this.getResearchSources(task, 'sourcesSelected');
+    const qualitySummary = this.getResearchQualitySummary(task);
+    const bestSourceId =
+      typeof qualitySummary?.bestSourceId === 'string'
+        ? qualitySummary.bestSourceId
+        : undefined;
+    const best =
+      (bestSourceId
+        ? sources.find((source) => source.id === bestSourceId)
+        : undefined) ??
+      sources.slice().sort((left, right) => {
+        const leftStrength = ['insufficient', 'tangential', 'weak', 'medium', 'strong'].indexOf(
+          String(left.evidenceStrength ?? 'insufficient')
+        );
+        const rightStrength = ['insufficient', 'tangential', 'weak', 'medium', 'strong'].indexOf(
+          String(right.evidenceStrength ?? 'insufficient')
+        );
+        if (leftStrength !== rightStrength) {
+          return rightStrength - leftStrength;
+        }
 
-      return Number(right.relevanceScore ?? 0) - Number(left.relevanceScore ?? 0);
-    });
-    const best = sources[0];
+        return Number(right.relevanceScore ?? 0) - Number(left.relevanceScore ?? 0);
+      })[0];
 
     if (!best) {
       return language === 'es'
@@ -2910,6 +2930,41 @@ export class AssemOrchestrator {
     return language === 'es'
       ? `Fuentes usadas solo como snippet para "${task.objective}": ${snippetSources.length}. ${list}`
       : `Snippet-only sources for "${task.objective}": ${snippetSources.length}. ${list}`;
+  }
+
+  private renderTaskSnippetDependency(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const qualitySummary = this.getResearchQualitySummary(task);
+    const snippetSources = this.getResearchSources(task, 'sourcesSelected').filter(
+      (source) =>
+        source.evidenceLevel === 'snippet_only' ||
+        source.usedAs === 'snippet_only' ||
+        (source.snippet && source.fetchStatus !== 'ok')
+    );
+
+    if (!qualitySummary && snippetSources.length === 0) {
+      return language === 'es'
+        ? `Todavia no hay una dependencia persistida de snippets para "${task.objective}".`
+        : `There is no persisted snippet dependency yet for "${task.objective}".`;
+    }
+
+    const snippetDominant = Boolean(qualitySummary?.snippetDominant);
+    const dominantBasis =
+      typeof qualitySummary?.dominantBasis === 'string'
+        ? qualitySummary.dominantBasis
+        : 'unknown';
+    const list = snippetSources
+      .slice(0, 4)
+      .map((source, index) => this.formatResearchSource(source, index))
+      .join(' ');
+
+    if (language === 'es') {
+      return `Parte del informe para "${task.objective}" depende de snippets en ${snippetSources.length} fuente(s). Base dominante: ${dominantBasis}. ${snippetDominant ? 'Ahora mismo la dependencia de snippets es dominante, asi que las conclusiones deben leerse con prudencia.' : 'Los snippets quedan como apoyo parcial, no como base principal.'} ${list}`.trim();
+    }
+
+    return `Part of the report for "${task.objective}" depends on snippets in ${snippetSources.length} source(s). Dominant basis: ${dominantBasis}. ${snippetDominant ? 'Snippet dependency is currently dominant, so conclusions must stay cautious.' : 'Snippets remain only partial support, not the main basis.'} ${list}`.trim();
   }
 
   private renderTaskDiscardedSources(
@@ -3003,6 +3058,47 @@ export class AssemOrchestrator {
     return language === 'es'
       ? `Limitaciones persistidas del informe "${task.objective}": ${list}`
       : `Persisted report limitations for "${task.objective}": ${list}`;
+  }
+
+  private renderTaskEvidenceSufficiency(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const qualitySummary = this.getResearchQualitySummary(task);
+    const searchError = this.getResearchSearchError(task);
+
+    if (searchError) {
+      return language === 'es'
+        ? `No hay base suficiente para "${task.objective}" porque la investigacion fallo: ${searchError}.`
+        : `There is not enough basis for "${task.objective}" because the research failed: ${searchError}.`;
+    }
+
+    if (!qualitySummary) {
+      return language === 'es'
+        ? `Todavia no hay un resumen persistido de suficiencia de evidencia para "${task.objective}".`
+        : `There is no persisted evidence sufficiency summary yet for "${task.objective}".`;
+    }
+
+    const readiness =
+      typeof qualitySummary.reportReadiness === 'string'
+        ? qualitySummary.reportReadiness
+        : 'insufficient';
+    const reason =
+      typeof qualitySummary.readinessReason === 'string' && qualitySummary.readinessReason.trim()
+        ? qualitySummary.readinessReason
+        : language === 'es'
+          ? 'sin motivo persistido'
+          : 'no persisted reason';
+    const strongCount = Number(qualitySummary.strongEvidenceCount ?? 0);
+    const mediumCount = Number(qualitySummary.mediumEvidenceCount ?? 0);
+    const weakCount = Number(qualitySummary.weakEvidenceCount ?? 0);
+    const tangentialCount = Number(qualitySummary.tangentialEvidenceCount ?? 0);
+
+    if (language === 'es') {
+      return `Base actual para "${task.objective}": ${readiness}. ${reason} Evidencia fuerte: ${strongCount}. Evidencia media: ${mediumCount}. Evidencia debil: ${weakCount}. Evidencia tangencial: ${tangentialCount}.`;
+    }
+
+    return `Current basis for "${task.objective}": ${readiness}. ${reason} Strong evidence: ${strongCount}. Medium evidence: ${mediumCount}. Weak evidence: ${weakCount}. Tangential evidence: ${tangentialCount}.`;
   }
 
   private renderTaskRefinementsSummary(

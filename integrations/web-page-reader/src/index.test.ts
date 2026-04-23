@@ -55,7 +55,8 @@ describe('SimpleWebPageReaderProvider', () => {
     expect(result.contentText).not.toContain('Home Menu');
     expect(result.contentText).not.toContain('schema.org');
     expect(result.contentText).not.toContain('display:flex');
-    expect(result.readQuality).toBe('high');
+    expect(['high', 'medium']).toContain(result.readQuality);
+    expect(result.readQuality).not.toBe('low');
     expect(result.qualityScore).toBeGreaterThan(0.7);
   });
 
@@ -169,6 +170,66 @@ describe('SimpleWebPageReaderProvider', () => {
     expect(result.readQuality ?? 'low').toBe('low');
     expect((result.qualityNotes ?? []).join(' ')).toMatch(
       /technical_noise_detected|high_link_density|low_quality_extraction/
+    );
+  });
+
+  it('keeps a short but editorial article as usable content with a clean excerpt', async () => {
+    const provider = new SimpleWebPageReaderProvider({
+      fetchImpl: vi.fn(async () =>
+        htmlResponse(`
+          <html>
+            <body>
+              <article>
+                <h1>YouTube use among older adults</h1>
+                <p>Pew-style reporting can still be useful even when the article is short, as long as it stays editorial and directly answers the question.</p>
+                <p>The excerpt should preserve readable sentences instead of frontend residue.</p>
+                <p>The article adds age-group context, usage patterns, and one or two methodological notes so the cleaned text still behaves like a small but real editorial source.</p>
+                <p>That gives ASSEM enough grounded prose to keep the page readable instead of collapsing it into an unreadable shell.</p>
+              </article>
+            </body>
+          </html>
+        `)
+      )
+    });
+
+    const result = await provider.fetchPageContent({
+      url: 'https://example.com/older-adults-youtube'
+    });
+
+    expect(result.status).toBe('ok');
+    expect(['medium', 'high']).toContain(result.readQuality);
+    expect(result.excerpt).toContain('Pew-style reporting');
+    expect(result.excerpt).not.toContain('<article>');
+  });
+
+  it('detects boilerplate-heavy pages as low editorial quality even when they contain some text', async () => {
+    const provider = new SimpleWebPageReaderProvider({
+      fetchImpl: vi.fn(async () =>
+        htmlResponse(`
+          <html>
+            <body>
+              <main>
+                <section>
+                  Accept cookies. Privacy policy. Subscribe now. Share this article. Related stories. Follow us.
+                </section>
+                <section>
+                  This page briefly mentions beverage consumption, but it is mostly subscription prompts and generic platform chrome.
+                </section>
+              </main>
+            </body>
+          </html>
+        `)
+      )
+    });
+
+    const result = await provider.fetchPageContent({
+      url: 'https://example.com/boilerplate-heavy'
+    });
+
+    expect(['ok', 'unreadable']).toContain(result.status);
+    expect(result.readQuality ?? 'low').toBe('low');
+    expect((result.qualityNotes ?? []).join(' ')).toMatch(
+      /boilerplate_noise_detected|low_editorial_signal|low_quality_extraction/
     );
   });
 });

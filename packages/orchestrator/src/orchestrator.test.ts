@@ -1389,6 +1389,162 @@ describe('AssemOrchestrator', () => {
     ).toBe(true);
   });
 
+  it('answers snippet dependency and evidence sufficiency queries from persisted quality summary', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const retrievedAt = new Date().toISOString();
+    await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Preparar informe sobre refrescos en USA',
+      status: 'active',
+      progressPercent: 62,
+      currentPhase: 'Sintetizar hallazgos',
+      metadata: {
+        taskType: 'research_report_basic',
+        research: {
+          query: 'consumo de refrescos usa',
+          providerId: 'brave',
+          retrievedAt,
+          searchedAt: retrievedAt,
+          sourcesFound: [
+            {
+              id: 'source-1',
+              title: 'CDC soft drink consumption',
+              url: 'https://cdc.gov/example',
+              normalizedUrl: 'https://cdc.gov/example',
+              domain: 'cdc.gov',
+              retrievedAt,
+              selectionStatus: 'selected',
+              selectionReason: 'official_preferred',
+              readQuality: 'high',
+              evidenceLevel: 'page_read',
+              evidenceStrength: 'strong',
+              evidenceRelevance: 'direct'
+            },
+            {
+              id: 'source-2',
+              title: 'Market roundup',
+              url: 'https://example.org/roundup',
+              normalizedUrl: 'https://example.org/roundup',
+              domain: 'example.org',
+              retrievedAt,
+              selectionStatus: 'selected',
+              selectionReason: 'matched_query',
+              evidenceLevel: 'snippet_only',
+              evidenceStrength: 'weak',
+              evidenceRelevance: 'supporting'
+            }
+          ],
+          sourcesSelected: [
+            {
+              id: 'source-1',
+              title: 'CDC soft drink consumption',
+              url: 'https://cdc.gov/example',
+              normalizedUrl: 'https://cdc.gov/example',
+              domain: 'cdc.gov',
+              retrievedAt,
+              selectionStatus: 'selected',
+              selectionReason: 'official_preferred',
+              readQuality: 'high',
+              evidenceLevel: 'page_read',
+              evidenceStrength: 'strong',
+              evidenceRelevance: 'direct'
+            },
+            {
+              id: 'source-2',
+              title: 'Market roundup',
+              url: 'https://example.org/roundup',
+              normalizedUrl: 'https://example.org/roundup',
+              domain: 'example.org',
+              retrievedAt,
+              selectionStatus: 'selected',
+              selectionReason: 'matched_query',
+              evidenceLevel: 'snippet_only',
+              evidenceStrength: 'weak',
+              evidenceRelevance: 'supporting'
+            }
+          ],
+          sourcesDiscarded: [],
+          selectionNotes: [],
+          limitations: ['Parte del informe depende de snippets secundarios.'],
+          evidence: [
+            {
+              id: 'evidence-1',
+              sourceId: 'source-1',
+              sourceTitle: 'CDC soft drink consumption',
+              sourceUrl: 'https://cdc.gov/example',
+              sourceDomain: 'cdc.gov',
+              evidenceLevel: 'page_read',
+              evidenceStrength: 'strong',
+              evidenceRelevance: 'direct',
+              basis: 'page_content',
+              summary: 'CDC aporta evidencia directa sobre consumo.',
+              facts: ['El consumo se mide con encuesta nacional.'],
+              extractedAt: retrievedAt
+            },
+            {
+              id: 'evidence-2',
+              sourceId: 'source-2',
+              sourceTitle: 'Market roundup',
+              sourceUrl: 'https://example.org/roundup',
+              sourceDomain: 'example.org',
+              evidenceLevel: 'snippet_only',
+              evidenceStrength: 'weak',
+              evidenceRelevance: 'supporting',
+              basis: 'snippet',
+              summary: 'Contexto secundario de mercado.',
+              facts: [],
+              extractedAt: retrievedAt
+            }
+          ],
+          evidenceLevel: 'page_read',
+          evidenceStrength: 'strong',
+          reportReadiness: 'limited',
+          qualitySummary: {
+            selectedSourcesCount: 2,
+            readSourcesCount: 1,
+            highQualityReadCount: 1,
+            mediumQualityReadCount: 0,
+            lowQualityReadCount: 0,
+            snippetOnlyCount: 1,
+            tangentialSourcesCount: 0,
+            strongEvidenceCount: 1,
+            mediumEvidenceCount: 0,
+            weakEvidenceCount: 1,
+            tangentialEvidenceCount: 0,
+            insufficientEvidenceCount: 0,
+            dominantBasis: 'mixed',
+            reportReadiness: 'limited',
+            hasSufficientBasis: true,
+            readinessReason:
+              'Hay evidencia util, pero no suficiente para un informe plenamente solido.',
+            snippetDominant: false,
+            limitationsRequired: true,
+            bestSourceId: 'source-1'
+          }
+        }
+      }
+    });
+
+    const snippetSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que parte sale solo de snippets'
+    });
+    const snippetMessage = getLastAssistantMessage(snippetSnapshot);
+    const sufficiencySnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'hay base suficiente o no'
+    });
+    const sufficiencyMessage = getLastAssistantMessage(sufficiencySnapshot);
+
+    expect(snippetMessage).toContain('snippets');
+    expect(snippetMessage).toContain('Market roundup');
+    expect(sufficiencyMessage).toContain('limited');
+    expect(sufficiencyMessage).toContain(
+      'no suficiente para un informe plenamente solido'
+    );
+  });
+
   it('answers progress for a failed research task from persisted failure state without inventing sources', async () => {
     const { orchestrator, taskManager } = await createOrchestrator();
     const session = await orchestrator.createSession();

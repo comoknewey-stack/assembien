@@ -199,6 +199,22 @@ describe('DeterministicTaskInterruptHandler', () => {
     expect(limitations.statusQueryKind).toBe('report_limitations');
   });
 
+  it('classifies snippet dependency and evidence sufficiency queries deterministically', () => {
+    const snippetDependency = handler.classify({
+      text: 'que parte sale solo de snippets',
+      session: createSession(),
+      activeTask: createTask()
+    });
+    const sufficiency = handler.classify({
+      text: 'hay base suficiente o no',
+      session: createSession(),
+      activeTask: createTask()
+    });
+
+    expect(snippetDependency.statusQueryKind).toBe('snippet_dependency');
+    expect(sufficiency.statusQueryKind).toBe('evidence_sufficiency');
+  });
+
   it('classifies source refinements for research tasks', () => {
     const official = handler.classify({
       text: 'usa fuentes oficiales',

@@ -25,10 +25,11 @@ It:
 - deduplicates and selects sources from real search results
 - persists selection/discard reasons
 - reads a very small bounded subset of selected public pages through `web-page-reader.fetch-page` when page fetch is enabled
-- persists fetched-page status, cleaned excerpts and extracted evidence notes
-- synthesizes findings through the configured model router using persisted evidence, preferring page-read evidence over snippet-only evidence
+- persists fetched-page status, cleaned excerpts, read-quality metrics and extracted evidence notes
+- synthesizes findings through the configured model router using persisted evidence, preferring higher-quality page-read evidence over snippet-only or tangential evidence
 - writes a real `sources.json`
 - writes a real `evidence.json`
+- persists `qualitySummary` and `reportReadiness` so later follow-up answers and guardrails use the same real quality judgement
 - writes a real `report.md`
 - writes a real `summary.txt`
 - registers those outputs as artifacts
@@ -37,6 +38,8 @@ If the session is `local_only` or web search is not configured, the orchestrator
 If search fails, times out or produces no selected sources, the task fails with `metadata.research.searchError` and does not write empty report artifacts.
 If page reading is disabled, unreadable or times out, runtime degrades honestly to snippet-only evidence when enough evidence still exists.
 If there is no usable persisted evidence after selection/fetch, the task fails instead of inventing findings.
+If page fetch succeeds but the cleaned content is still noisy or weak, the source can remain persisted as low-quality or tangential evidence instead of being treated as strong support.
+If the persisted `qualitySummary` decides readiness is `insufficient`, runtime fails honestly instead of forcing a weak report.
 
 ## Real Phases
 
@@ -120,6 +123,7 @@ Typical outputs:
 - provider id
 - `retrievedAt`
 - evidence level
+- evidence strength
 - fetched page records with `fetchStatus`, `httpStatus`, `contentType`, `finalUrl`
 - per-source evidence records
 - persisted limitations

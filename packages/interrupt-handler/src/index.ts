@@ -226,6 +226,14 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
     }
 
     if (
+      /^(?:que parte sale solo de snippets|que parte del informe sale solo de snippets|what part comes only from snippets|what part of the report is snippet only)$/.test(
+        normalized
+      )
+    ) {
+      return 'snippet_dependency';
+    }
+
+    if (
       /^(?:que fuentes descartaste|por que descartaste esa fuente|fuentes descartadas|what sources did you discard|why did you discard that source|discarded sources)$/.test(
         normalized
       )
@@ -247,6 +255,14 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
       )
     ) {
       return 'report_limitations';
+    }
+
+    if (
+      /^(?:hay base suficiente o no|hay base suficiente|hay base solida|hay base real|is there enough basis|is there enough evidence|is there a solid basis)$/.test(
+        normalized
+      )
+    ) {
+      return 'evidence_sufficiency';
     }
 
     return null;

@@ -58,8 +58,14 @@ Current status-style messages include patterns such as:
 - `que fuentes has leido de verdad`
 - `que paginas has podido leer`
 - `que fuentes usaste solo como snippet`
+- `que parte sale solo de snippets`
 - `que evidencia tienes`
 - `que fuentes descartaste`
+- `que fuentes tienen evidencia fuerte`
+- `que fuentes son debiles o tangenciales`
+- `cual es la mejor fuente que encontraste`
+- `que limitaciones tiene este informe`
+- `hay base suficiente o no`
 
 Current control messages include patterns such as:
 
@@ -172,7 +178,9 @@ Current event types:
 - `task_interrupt_independent_query`
 - `task_interrupt_sources_query`
 
-Research/source queries are answered from persisted task state, not from free-form model text. If a research task failed, has no selected sources or never generated an artifact, Interrupt Handler routes the question through deterministic task-state rendering so ASSEM does not invent sources, reports or paths.
+Research/source queries are answered from persisted task state, not from free-form model text. If a research task failed, has no selected sources, only has weak/tangential evidence or never generated an artifact, Interrupt Handler routes the question through deterministic task-state rendering so ASSEM does not invent sources, strength, reports or paths.
+
+This now also includes persisted research quality state such as `qualitySummary` and `reportReadiness`, so questions about snippet dependence or whether there is enough basis for a solid report are answered from real task metadata instead of model improvisation.
 
 These events are recorded separately from chat history.
 
