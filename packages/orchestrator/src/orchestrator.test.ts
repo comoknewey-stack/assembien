@@ -314,6 +314,12 @@ async function createOrchestrator(options: TestOrchestratorOptions = {}) {
         webPageMinTextChars: 220,
         webPageMinTextDensity: 0.18,
         webPageMaxLinkDensity: 0.55,
+        browserAutomationEnabled: true,
+        browserMaxPagesPerTask: 3,
+        browserMaxLinksPerPage: 20,
+        browserTextMaxChars: 12_000,
+        browserTimeoutMs: 15_000,
+        browserAllowScreenshots: false,
         allowedOrigins: [],
         ...options.configOverrides
       },
@@ -2527,5 +2533,362 @@ describe('AssemOrchestrator', () => {
       fallbackUsed: true
     });
     expect(telemetry.records.at(-1)?.fallbackReason).toContain('ollama');
+  });
+
+  it('creates a browser_read_basic task from chat and reports a grounded browser plan', async () => {
+    const { orchestrator, taskManager, telemetry } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    await orchestrator.updateMode({
+      sessionId: session.sessionId,
+      activeMode: {
+        privacy: 'balanced',
+        runtime: 'sandbox'
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'abre esta web https://example.com y dime de que trata'
+    });
+    const activeTask = await taskManager.getActiveTaskForSession(session.sessionId);
+    const message = getLastAssistantMessage(snapshot);
+
+    expect(activeTask?.plan?.taskType).toBe('browser_read_basic');
+    expect(activeTask?.plan?.steps.map((step) => step.id)).toEqual([
+      'prepare-workspace',
+      'open-page',
+      'extract-page',
+      'follow-links',
+      'extract-findings',
+      'write-browser-notes',
+      'write-browser-snapshot',
+      'write-navigation-log'
+    ]);
+    expect(message).toContain('browser-notes.md');
+    expect(message).toContain('page-snapshot.json');
+    expect(message).toContain('navigation-log.json');
+    expect(
+      telemetry.records.some((record) => record.eventType === 'task_plan_created')
+    ).toBe(true);
+    expect(
+      telemetry.records.some((record) => record.eventType === 'task_plan_applied')
+    ).toBe(true);
+  });
+
+  it('blocks browser automation in local_only before creating a browser task', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'abre esta web https://example.com y dime de que trata'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain(
+      'Browser Automation v1 necesita acceso web'
+    );
+    expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
+  });
+
+  it('blocks browser automation before task creation when the runtime browser layer is disabled', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator({
+      configOverrides: {
+        browserAutomationEnabled: false
+      }
+    });
+    const session = await orchestrator.createSession();
+    await orchestrator.updateMode({
+      sessionId: session.sessionId,
+      activeMode: {
+        privacy: 'balanced',
+        runtime: 'sandbox'
+      }
+    });
+
+    const snapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'abre esta web https://example.com y dime de que trata'
+    });
+
+    expect(getLastAssistantMessage(snapshot)).toContain(
+      'ASSEM_BROWSER_AUTOMATION_ENABLED'
+    );
+    expect(await taskManager.getActiveTaskForSession(session.sessionId)).toBeNull();
+  });
+
+  it('answers browser task questions from persisted page state instead of inventing web content', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const now = new Date().toISOString();
+
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Abrir https://example.com y resumir la pagina',
+      status: 'active',
+      progressPercent: 60,
+      currentPhase: 'Extraer hallazgos',
+      currentStepId: 'extract-findings',
+      steps: [
+        {
+          id: 'open-page',
+          label: 'Abrir pagina inicial'
+        },
+        {
+          id: 'extract-findings',
+          label: 'Extraer hallazgos'
+        }
+      ],
+      metadata: {
+        taskType: 'browser_read_basic',
+        browser: {
+          initialUrl: 'https://example.com',
+          currentUrl: 'https://example.com/report',
+          currentTitle: 'Example report',
+          pagesVisited: [
+            {
+              pageId: 'page-1',
+              url: 'https://example.com',
+              finalUrl: 'https://example.com/report',
+              title: 'Example report',
+              openedAt: now,
+              lastUpdatedAt: now,
+              snapshotSummary: 'Example report. Public statistics and a readable summary.',
+              visibleTextExcerpt: 'Public statistics and a readable summary for ASSEM.',
+              links: [
+                {
+                  id: 'link-1',
+                  text: 'Official dataset',
+                  url: 'https://example.com/dataset',
+                  domain: 'example.com',
+                  sameDomain: true,
+                  externalDomain: false,
+                  safety: 'safe_navigation'
+                }
+              ],
+              status: 'ready',
+              navigationIndex: 0
+            }
+          ],
+          navigationLog: [
+            {
+              id: 'nav-1',
+              pageId: 'page-1',
+              action: 'open',
+              toUrl: 'https://example.com/report',
+              title: 'Example report',
+              detail: 'Initial page open',
+              recordedAt: now
+            }
+          ],
+          findings: [
+            'Pagina actual: Example report (https://example.com/report).',
+            'Resumen visible: Public statistics and a readable summary for ASSEM.'
+          ],
+          safetyNotes: [],
+          visibleTextExcerpt: 'Public statistics and a readable summary for ASSEM.',
+          visibleLinks: [
+            {
+              id: 'link-1',
+              text: 'Official dataset',
+              url: 'https://example.com/dataset',
+              domain: 'example.com',
+              sameDomain: true,
+              externalDomain: false,
+              safety: 'safe_navigation'
+            }
+          ],
+          blockedActions: []
+        }
+      }
+    });
+    await taskManager.attachArtifact(task.id, {
+      kind: 'document',
+      label: 'Notas del navegador',
+      filePath: 'C:\\sandbox\\tasks\\browser\\browser-notes.md'
+    });
+    await taskManager.attachArtifact(task.id, {
+      kind: 'document',
+      label: 'Snapshot de pagina',
+      filePath: 'C:\\sandbox\\tasks\\browser\\page-snapshot.json'
+    });
+
+    const pageSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que pagina has abierto'
+    });
+    const pageMessage = getLastAssistantMessage(pageSnapshot);
+    const urlSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'en que url estas'
+    });
+    const urlMessage = getLastAssistantMessage(urlSnapshot);
+    const linksSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que enlaces viste'
+    });
+    const linksMessage = getLastAssistantMessage(linksSnapshot);
+    const findingsSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que has encontrado'
+    });
+    const findingsMessage = getLastAssistantMessage(findingsSnapshot);
+
+    expect(pageMessage).toContain('Example report');
+    expect(urlMessage).toContain('https://example.com/report');
+    expect(linksMessage).toContain('Official dataset');
+    expect(findingsMessage).toContain(
+      'Public statistics and a readable summary for ASSEM.'
+    );
+  });
+
+  it('answers browser opening failures from persisted transport diagnostics', async () => {
+    const { orchestrator, taskManager } = await createOrchestrator();
+    const session = await orchestrator.createSession();
+    const now = new Date().toISOString();
+
+    const task = await taskManager.createTask({
+      sessionId: session.sessionId,
+      objective: 'Abrir https://www.sodercan.es/ y resumir la pagina',
+      status: 'active',
+      progressPercent: 12,
+      currentPhase: 'Abrir pagina inicial',
+      currentStepId: 'open-page',
+      steps: [
+        {
+          id: 'open-page',
+          label: 'Abrir pagina inicial'
+        }
+      ],
+      metadata: {
+        taskType: 'browser_read_basic',
+        browser: {
+          initialUrl: 'https://www.sodercan.es/',
+          currentUrl: 'https://www.sodercan.es/',
+          pagesVisited: [
+            {
+              pageId: 'page-sodercan',
+              url: 'https://www.sodercan.es/',
+              finalUrl: 'https://www.sodercan.es/',
+              openedAt: now,
+              lastUpdatedAt: now,
+              snapshotSummary:
+                'Pagina sin titulo. No se pudo abrir la pagina (tls_error): fetch failed.',
+              visibleTextExcerpt: '',
+              links: [],
+              status: 'error',
+              errorMessage: 'fetch failed',
+              transport: {
+                attemptedUrl: 'https://www.sodercan.es/',
+                finalUrl: 'https://www.sodercan.es/',
+                openAttemptedAt: now,
+                openErrorType: 'tls_error',
+                openErrorMessage: 'fetch failed',
+                openErrorCause: 'unable to verify the first certificate',
+                fallbackAttempted: false,
+                fallbackSucceeded: false,
+                fallbackMode: 'none',
+                transportNotes: [
+                  'La apertura fallo en la validacion TLS/certificado del stack HTTP de Node.',
+                  'No se intento fallback de solo lectura porque Browser Automation v1.1 no implementa una ruta segura adicional para este caso.'
+                ]
+              },
+              navigationIndex: 0
+            }
+          ],
+          navigationLog: [
+            {
+              id: 'nav-open-1',
+              pageId: 'page-sodercan',
+              action: 'open',
+              toUrl: 'https://www.sodercan.es/',
+              detail: 'No se pudo abrir la pagina.',
+              recordedAt: now,
+              transport: {
+                attemptedUrl: 'https://www.sodercan.es/',
+                finalUrl: 'https://www.sodercan.es/',
+                openAttemptedAt: now,
+                openErrorType: 'tls_error',
+                openErrorMessage: 'fetch failed',
+                openErrorCause: 'unable to verify the first certificate',
+                fallbackAttempted: false,
+                fallbackSucceeded: false,
+                fallbackMode: 'none',
+                transportNotes: [
+                  'La apertura fallo en la validacion TLS/certificado del stack HTTP de Node.'
+                ]
+              }
+            }
+          ],
+          findings: [
+            'No se pudo abrir https://www.sodercan.es/.',
+            'Diagnostico de transporte: tipo=tls_error | mensaje=fetch failed | causa=unable to verify the first certificate | fallback=none no intentado.'
+          ],
+          safetyNotes: [],
+          blockedActions: [],
+          openTransport: {
+            attemptedUrl: 'https://www.sodercan.es/',
+            finalUrl: 'https://www.sodercan.es/',
+            openAttemptedAt: now,
+            openErrorType: 'tls_error',
+            openErrorMessage: 'fetch failed',
+            openErrorCause: 'unable to verify the first certificate',
+            fallbackAttempted: false,
+            fallbackSucceeded: false,
+            fallbackMode: 'none',
+            transportNotes: [
+              'La apertura fallo en la validacion TLS/certificado del stack HTTP de Node.',
+              'No se intento fallback de solo lectura porque Browser Automation v1.1 no implementa una ruta segura adicional para este caso.'
+            ]
+          },
+          transportNotes: [
+            'La apertura fallo en la validacion TLS/certificado del stack HTTP de Node.',
+            'No se intento fallback de solo lectura porque Browser Automation v1.1 no implementa una ruta segura adicional para este caso.'
+          ],
+          browserError:
+            'No se pudo abrir https://www.sodercan.es/: tipo=tls_error | mensaje=fetch failed | causa=unable to verify the first certificate | fallback=none no intentado'
+        }
+      }
+    });
+    await taskManager.failTask(
+      task.id,
+      'No se pudo abrir https://www.sodercan.es/: tipo=tls_error | mensaje=fetch failed | causa=unable to verify the first certificate | fallback=none no intentado'
+    );
+    await taskManager.attachArtifact(task.id, {
+      kind: 'document',
+      label: 'Snapshot de pagina',
+      filePath: 'C:\\sandbox\\tasks\\browser\\page-snapshot.json'
+    });
+    await taskManager.attachArtifact(task.id, {
+      kind: 'document',
+      label: 'Log de navegacion',
+      filePath: 'C:\\sandbox\\tasks\\browser\\navigation-log.json'
+    });
+
+    const failureSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'por que ha fallado'
+    });
+    const failureMessage = getLastAssistantMessage(failureSnapshot);
+    const errorSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'que error dio'
+    });
+    const errorMessage = getLastAssistantMessage(errorSnapshot);
+    const routeSnapshot = await orchestrator.handleChat({
+      sessionId: session.sessionId,
+      text: 'intentaste otra ruta'
+    });
+    const routeMessage = getLastAssistantMessage(routeSnapshot);
+
+    expect(failureMessage).toContain('tls_error');
+    expect(failureMessage).toContain('unable to verify the first certificate');
+    expect(failureMessage).toContain('Fallback: no intentado');
+    expect(failureMessage).toContain('page-snapshot.json');
+    expect(errorMessage).toContain('Tipo de fallo: tls_error');
+    expect(errorMessage).toContain('Mensaje: fetch failed');
+    expect(routeMessage).toContain('Fallback: no intentado');
+    expect(routeMessage).toContain(
+      'Browser Automation v1.1 no implementa una ruta segura adicional'
+    );
   });
 });

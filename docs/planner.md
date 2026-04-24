@@ -169,9 +169,35 @@ Planner v1 does not yet do:
 
 - general-purpose task decomposition
 - runtime re-planning after every step
-- multiple task types beyond `research_report_basic`
-- browser or desktop automation planning
+- desktop automation planning
 - autonomous sub-planning
 - conflict resolution across multiple simultaneous active tasks
 
 This phase creates the first honest planning layer that the rest of the runtime can build on top of.
+
+## Browser Automation v1 in Planner
+
+Planner now supports a second grounded task type:
+
+- `browser_read_basic`
+
+Detected requests include examples such as:
+
+- `abre esta web y dime de que trata`
+- `mira esta pagina y saca los enlaces principales`
+- `visita esta URL y dime que dice`
+- `busca X en esta pagina`
+
+Planner only accepts browser tasks when:
+
+- the session is not in `local_only`
+- `ASSEM_BROWSER_AUTOMATION_ENABLED` is enabled in runtime config
+
+The generated plan stays narrow and auditable:
+
+- prepare workspace
+- open page
+- extract visible page state
+- optionally follow a very small number of safe links
+- extract findings
+- persist notes and snapshots

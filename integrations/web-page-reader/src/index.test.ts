@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  SimpleBrowserAutomationProvider,
   SimpleWebPageReaderProvider,
   validateFetchUrl
 } from './index';
@@ -231,5 +232,258 @@ describe('SimpleWebPageReaderProvider', () => {
     expect((result.qualityNotes ?? []).join(' ')).toMatch(
       /boilerplate_noise_detected|low_editorial_signal|low_quality_extraction/
     );
+  });
+});
+
+describe('SimpleBrowserAutomationProvider', () => {
+  it('opens a page, extracts visible text and lists visible links', async () => {
+    const provider = new SimpleBrowserAutomationProvider({
+      fetchImpl: vi.fn(async () =>
+        htmlResponse(`
+          <html>
+            <head><title>Example browser page</title></head>
+            <body>
+              <main>
+                <article>
+                  <h1>Public statistics</h1>
+                  <p>This page explains the public dataset and gives a readable summary for ASSEM.</p>
+                  <a href="https://example.com/details">Dataset details</a>
+                  <a href="https://example.com/blog/post">Blog analysis</a>
+                </article>
+              </main>
+            </body>
+          </html>
+        `)
+      )
+    });
+
+    const opened = await provider.openPage({
+      url: 'https://example.com/start'
+    });
+    const text = await provider.extractVisibleText({
+      pageId: opened.pageId,
+      maxChars: 400
+    });
+    const links = await provider.listVisibleLinks({
+      pageId: opened.pageId,
+      maxLinks: 10
+    });
+
+    expect(opened.snapshot.title).toBe('Example browser page');
+    expect(text.excerpt).toContain('public dataset');
+    expect(links.links).toHaveLength(2);
+    expect(links.links[0]?.url).toBe('https://example.com/details');
+  });
+
+  it('blocks action-like navigation links instead of following them', async () => {
+    const provider = new SimpleBrowserAutomationProvider({
+      fetchImpl: vi.fn(async () =>
+        htmlResponse(`
+          <html>
+            <body>
+              <main>
+                <a href="https://example.com/login">Login now</a>
+                <a href="https://example.com/buy">Comprar ahora</a>
+              </main>
+            </body>
+          </html>
+        `)
+      )
+    });
+
+    const opened = await provider.openPage({
+      url: 'https://example.com/start'
+    });
+    const links = await provider.listVisibleLinks({
+      pageId: opened.pageId,
+      maxLinks: 10
+    });
+    const blocked = await provider.clickLink({
+      pageId: opened.pageId,
+      linkId: links.links[0]!.id
+    });
+
+    expect(links.links[0]?.safety).toBe('requires_confirmation');
+    expect(blocked.navigation.blocked).toBe(true);
+    expect(blocked.navigation.reason).toBe('sensitive_action_like_link');
+    expect(blocked.snapshot.finalUrl).toBe(opened.snapshot.finalUrl);
+  });
+
+  it('follows a safe navigation link and updates the snapshot', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        htmlResponse(`
+          <html>
+            <body>
+              <main>
+                <article>
+                  <h1>Index</h1>
+                  <a href="https://example.com/report">Official report</a>
+                </article>
+              </main>
+            </body>
+          </html>
+        `)
+      )
+      .mockResolvedValueOnce(
+        htmlResponse(`
+          <html>
+            <head><title>Official report</title></head>
+            <body>
+              <main>
+                <article>
+                  <h1>Official report</h1>
+                  <p>The report contains readable evidence and a direct answer.</p>
+                </article>
+              </main>
+            </body>
+          </html>
+        `)
+      );
+    const provider = new SimpleBrowserAutomationProvider({
+      fetchImpl
+    });
+
+    const opened = await provider.openPage({
+      url: 'https://example.com/start'
+    });
+    const links = await provider.listVisibleLinks({
+      pageId: opened.pageId,
+      maxLinks: 10
+    });
+    const clicked = await provider.clickLink({
+      pageId: opened.pageId,
+      linkId: links.links[0]!.id
+    });
+
+    expect(clicked.navigation.blocked).toBe(false);
+    expect(clicked.snapshot.finalUrl).toBe('https://example.com/report');
+    expect(clicked.snapshot.title).toBe('Official report');
+  });
+
+  it('classifies timeout errors without inventing page content', async () => {
+    const provider = new SimpleBrowserAutomationProvider({
+      timeoutMs: 1_000,
+      fetchImpl: vi.fn(
+        async () => Promise.reject(new DOMException('Aborted', 'AbortError'))
+      )
+    });
+
+    const opened = await provider.openPage({
+      url: 'https://example.com/slow-browser'
+    });
+
+    expect(opened.snapshot.status).toBe('error');
+    expect(opened.snapshot.visibleTextExcerpt).toBe('');
+    expect(opened.snapshot.transport).toMatchObject({
+      openErrorType: 'timeout',
+      openErrorMessage: 'Page fetch timed out after 1000ms.',
+      fallbackAttempted: false,
+      fallbackSucceeded: false,
+      fallbackMode: 'none'
+    });
+    expect(opened.snapshot.transport?.transportNotes.join(' ')).toContain(
+      'No se intento fallback de solo lectura'
+    );
+  });
+
+  it('classifies TLS opening failures and persists the underlying cause', async () => {
+    const tlsCause = Object.assign(
+      new Error(
+        'unable to verify the first certificate; if the root CA is installed locally, try running Node.js with --use-system-ca'
+      ),
+      {
+        code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+      }
+    );
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch failed', {
+        cause: tlsCause
+      });
+    });
+    const provider = new SimpleBrowserAutomationProvider({
+      fetchImpl
+    });
+
+    const opened = await provider.openPage({
+      url: 'https://www.sodercan.es/'
+    });
+
+    expect(opened.snapshot.status).toBe('error');
+    expect(opened.snapshot.errorMessage).toBe('fetch failed');
+    expect(opened.snapshot.transport).toMatchObject({
+      attemptedUrl: 'https://www.sodercan.es/',
+      openErrorType: 'tls_error',
+      openErrorMessage: 'fetch failed',
+      openErrorCause:
+        'unable to verify the first certificate; if the root CA is installed locally, try running Node.js with --use-system-ca',
+      fallbackAttempted: false,
+      fallbackSucceeded: false,
+      fallbackMode: 'none'
+    });
+    expect(opened.snapshot.transport?.transportNotes.join(' ')).toContain(
+      'validacion TLS/certificado'
+    );
+  });
+
+  it('classifies DNS failures when the host cannot be resolved', async () => {
+    const fetchImpl = vi.fn(async () => {
+      const dnsError = Object.assign(
+        new Error('getaddrinfo ENOTFOUND does-not-exist.example'),
+        {
+          code: 'ENOTFOUND'
+        }
+      );
+      throw new Error('fetch failed', {
+        cause: dnsError
+      });
+    });
+    const provider = new SimpleBrowserAutomationProvider({
+      fetchImpl
+    });
+
+    const opened = await provider.openPage({
+      url: 'https://does-not-exist.example/'
+    });
+
+    expect(opened.snapshot.status).toBe('error');
+    expect(opened.snapshot.transport).toMatchObject({
+      openErrorType: 'dns_error',
+      openErrorMessage: 'fetch failed',
+      openErrorCause: 'getaddrinfo ENOTFOUND does-not-exist.example',
+      fallbackAttempted: false,
+      fallbackSucceeded: false,
+      fallbackMode: 'none'
+    });
+  });
+
+  it('classifies unsupported content types without pretending the page was read', async () => {
+    const provider = new SimpleBrowserAutomationProvider({
+      fetchImpl: vi.fn(async () =>
+        new Response('%PDF-1.7', {
+          status: 200,
+          headers: {
+            'content-type': 'application/pdf'
+          }
+        })
+      )
+    });
+
+    const opened = await provider.openPage({
+      url: 'https://example.com/report.pdf'
+    });
+
+    expect(opened.snapshot.status).toBe('blocked');
+    expect(opened.snapshot.visibleTextExcerpt).toBe('');
+    expect(opened.snapshot.links).toHaveLength(0);
+    expect(opened.snapshot.transport).toMatchObject({
+      openErrorType: 'unsupported_content_type',
+      openErrorMessage: 'Unsupported content type: application/pdf',
+      contentType: 'application/pdf',
+      fallbackAttempted: false,
+      fallbackSucceeded: false,
+      fallbackMode: 'none'
+    });
   });
 });

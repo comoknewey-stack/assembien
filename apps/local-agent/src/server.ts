@@ -12,6 +12,14 @@ import {
   createWebSearchTool
 } from '@assem/integration-web-search';
 import {
+  createBrowserAutomationProvider,
+  createBrowserClickLinkTool,
+  createBrowserClosePageTool,
+  createBrowserExtractVisibleTextTool,
+  createBrowserFindOnPageTool,
+  createBrowserGetPageSnapshotTool,
+  createBrowserListVisibleLinksTool,
+  createBrowserOpenPageTool,
   createWebPageReaderProvider,
   createWebPageReaderTool
 } from '@assem/integration-web-page-reader';
@@ -224,6 +232,14 @@ async function main() {
     minTextDensity: config.webPageMinTextDensity,
     maxLinkDensity: config.webPageMaxLinkDensity
   });
+  const browserAutomationProvider = createBrowserAutomationProvider({
+    enabled: config.browserAutomationEnabled,
+    timeoutMs: config.browserTimeoutMs,
+    maxPagesPerTask: config.browserMaxPagesPerTask,
+    maxLinksPerPage: config.browserMaxLinksPerPage,
+    textMaxChars: config.browserTextMaxChars,
+    allowScreenshots: config.browserAllowScreenshots
+  });
 
   toolRegistry.register(createClockTimeTool());
   toolRegistry.register(listSandboxTool);
@@ -233,6 +249,13 @@ async function main() {
   toolRegistry.register(createCalendarTool);
   toolRegistry.register(createWebSearchTool(webSearchProvider));
   toolRegistry.register(createWebPageReaderTool(webPageReaderProvider));
+  toolRegistry.register(createBrowserOpenPageTool(browserAutomationProvider));
+  toolRegistry.register(createBrowserGetPageSnapshotTool(browserAutomationProvider));
+  toolRegistry.register(createBrowserExtractVisibleTextTool(browserAutomationProvider));
+  toolRegistry.register(createBrowserListVisibleLinksTool(browserAutomationProvider));
+  toolRegistry.register(createBrowserClickLinkTool(browserAutomationProvider));
+  toolRegistry.register(createBrowserFindOnPageTool(browserAutomationProvider));
+  toolRegistry.register(createBrowserClosePageTool(browserAutomationProvider));
 
   const sessionStore = new FileSessionStore(
     paths.sessionsFilePath,
@@ -309,7 +332,10 @@ async function main() {
       researchPageMaxContentChars: config.webPageMaxContentChars,
       researchPageMinTextChars: config.webPageMinTextChars,
       researchPageMinTextDensity: config.webPageMinTextDensity,
-      researchPageMaxLinkDensity: config.webPageMaxLinkDensity
+      researchPageMaxLinkDensity: config.webPageMaxLinkDensity,
+      browserMaxPagesPerTask: config.browserMaxPagesPerTask,
+      browserMaxLinksPerPage: config.browserMaxLinksPerPage,
+      browserTextMaxChars: config.browserTextMaxChars
     },
     {
       onEvent: async (event: TaskRuntimeEvent) => {
@@ -501,6 +527,10 @@ async function main() {
       },
       webPageReader: {
         ...webPageReaderStatus,
+        privacyAllowsWeb: session ? session.activeMode.privacy !== 'local_only' : false
+      },
+      browserAutomation: {
+        ...browserAutomationProvider.getStatus(),
         privacyAllowsWeb: session ? session.activeMode.privacy !== 'local_only' : false
       },
       taskManager: {
@@ -1026,7 +1056,7 @@ async function main() {
         const plannedTask:
           | { accepted: true; plan: NonNullable<TaskExecutionRequest['plan']>; clarificationMessage?: undefined; reason?: undefined }
           | ReturnType<typeof planner.createPlan> =
-          body.plan
+              body.plan
             ? { accepted: true, plan: body.plan }
             : planner.createPlan({
                 session,
@@ -1034,7 +1064,10 @@ async function main() {
                 objective: body.objective,
                 requestedTaskType: body.taskType,
                 webSearchAvailable: webSearchProvider.getStatus().configured,
-                privacyAllowsWebSearch: session.activeMode.privacy !== 'local_only'
+                privacyAllowsWebSearch: session.activeMode.privacy !== 'local_only',
+                browserAutomationAvailable: browserAutomationProvider.getStatus().enabled,
+                privacyAllowsBrowserAutomation:
+                  session.activeMode.privacy !== 'local_only'
               });
 
         if (!plannedTask.plan) {

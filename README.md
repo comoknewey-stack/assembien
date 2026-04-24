@@ -25,6 +25,14 @@ ASSEM is a local-first assistant MVP built as a modular TypeScript monorepo. The
   - generated `sources.json`, `summary.txt`, `report.md` and `evidence.json` only when real selected sources and usable evidence exist
   - clear refusal before task creation in `local_only` or when web search is not configured
   - honest degradation to snippet-only synthesis when page reading is disabled or unreadable
+- Browser Automation v1 for `browser_read_basic` when web access is allowed:
+  - bounded safe browser layer behind a `BrowserAutomationProvider` interface
+  - open a public page, extract visible text, list visible links, search within the current page and follow a very small number of safe navigation links
+  - persisted browser task state plus generated `browser-notes.md`, `page-snapshot.json` and `navigation-log.json`
+  - deterministic chat answers for `que pagina has abierto`, `en que url estas`, `que enlaces viste`, `que has encontrado` and navigation-step questions from persisted state only
+  - Browser v1.1 classifies opening failures such as `tls_error`, `dns_error`, `timeout`, `http_error` and `unsupported_content_type`, and persists the transport diagnosis instead of pretending the page was read
+  - if the initial page cannot be opened, the task fails honestly and ASSEM answers `por que ha fallado` / `que error dio` from persisted transport state
+  - no fake browser tasks in `local_only` or when browser automation is disabled
 - Task Manager v1 plus Task Runtime / Executor v1 with one persisted active task per session, real phase execution, artifact registration and deterministic chat answers for status, progress, pause, resume and cancel.
 - Interrupt Handler v1 to distinguish active-task control, active-task refinements, clarifications and independent questions without losing the running task.
 - Persistent sessions, task state, action history, profile memory, scheduler state and telemetry.
@@ -137,6 +145,12 @@ Available variables:
 - `ASSEM_WEB_PAGE_MIN_TEXT_CHARS=220`
 - `ASSEM_WEB_PAGE_MIN_TEXT_DENSITY=0.18`
 - `ASSEM_WEB_PAGE_MAX_LINK_DENSITY=0.55`
+- `ASSEM_BROWSER_AUTOMATION_ENABLED=true`
+- `ASSEM_BROWSER_MAX_PAGES_PER_TASK=3`
+- `ASSEM_BROWSER_MAX_LINKS_PER_PAGE=20`
+- `ASSEM_BROWSER_TEXT_MAX_CHARS=12000`
+- `ASSEM_BROWSER_TIMEOUT_MS=15000`
+- `ASSEM_BROWSER_ALLOW_SCREENSHOTS=false`
 - `ASSEM_ALLOWED_ORIGINS=http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost,https://tauri.localhost,tauri://localhost`
 
 ## Research v2.1
@@ -196,6 +210,52 @@ Privacy:
 - Fetched web content is always treated as untrusted evidence, never as instructions. ASSEM does not obey page text like `ignore previous instructions`, `download`, `log in` or similar.
 - Reports can now combine snippet evidence and cleaned page-read evidence, but ASSEM still does not do browser automation, crawling, logins or scraping behind paywalls.
 - Only `text/html` and `text/plain` are read in this phase. PDFs, images, videos and other binary responses are discarded.
+
+## Browser Automation v1
+
+Browser Automation v1 is a deliberately narrow web-reading and navigation layer. It is not a free web agent.
+
+Current integration choice in this phase:
+
+- provider id: `safe-http-browser`
+- implementation: bounded HTTP page fetching plus persisted page snapshots and safe-link classification
+- not yet: full Playwright-driven interactive browser control
+
+Capabilities in this phase:
+
+- open a public URL
+- read the page title and visible text
+- list visible links
+- search for a query inside the current page snapshot
+- follow clearly safe navigation links
+- persist grounded browser state for the task
+- answer follow-up questions from persisted page state, not from model guesses
+
+Artifacts:
+
+- `browser-notes.md`
+- `page-snapshot.json`
+- `navigation-log.json`
+
+Limits and safety:
+
+- `local_only` blocks browser tasks before creation
+- links that look like login, purchase, submit, delete, register, pay or similar are blocked or treated as requiring confirmation rather than followed automatically
+- page content is treated as untrusted evidence and cannot modify prompts, tools or policy
+- no login, no credentials, no purchases, no irreversible form submission, no uploads, no downloads of executables
+- page count, link count, extracted text and timeout are all bounded
+- Browser v1.1 does not disable TLS validation globally and does not use an insecure fallback route when Node/undici cannot validate a certificate chain
+
+Configure it in `.env`:
+
+```bash
+ASSEM_BROWSER_AUTOMATION_ENABLED=true
+ASSEM_BROWSER_MAX_PAGES_PER_TASK=3
+ASSEM_BROWSER_MAX_LINKS_PER_PAGE=20
+ASSEM_BROWSER_TEXT_MAX_CHARS=12000
+ASSEM_BROWSER_TIMEOUT_MS=15000
+ASSEM_BROWSER_ALLOW_SCREENSHOTS=false
+```
 
 Evaluation:
 

@@ -63,6 +63,54 @@ function createTask(): AssemTask {
   };
 }
 
+function createBrowserTask(): AssemTask {
+  return {
+    id: 'task-browser',
+    sessionId: 'session-interrupt',
+    objective: 'Abrir https://example.com y resumir la pagina',
+    status: 'active',
+    progressPercent: 40,
+    currentPhase: 'Extraer contenido visible',
+    currentStepId: 'extract-page',
+    steps: [
+      {
+        id: 'prepare-workspace',
+        label: 'Preparar carpeta de trabajo',
+        status: 'completed',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString()
+      },
+      {
+        id: 'extract-page',
+        label: 'Extraer contenido visible',
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString()
+      }
+    ],
+    artifacts: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    startedAt: new Date().toISOString(),
+    metadata: {
+      taskType: 'browser_read_basic',
+      browser: {
+        initialUrl: 'https://example.com',
+        currentUrl: 'https://example.com/article',
+        currentTitle: 'Example article',
+        pagesVisited: [],
+        navigationLog: [],
+        findings: [],
+        safetyNotes: [],
+        blockedActions: []
+      }
+    }
+  };
+}
+
 describe('DeterministicTaskInterruptHandler', () => {
   const handler = new DeterministicTaskInterruptHandler();
 
@@ -244,6 +292,75 @@ describe('DeterministicTaskInterruptHandler', () => {
       type: 'recency',
       value: 'recent'
     });
+  });
+
+  it('classifies browser status queries deterministically for browser tasks', () => {
+    const page = handler.classify({
+      text: 'que pagina has abierto',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+    const url = handler.classify({
+      text: 'en que url estas',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+    const links = handler.classify({
+      text: 'que enlaces viste',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+    const findings = handler.classify({
+      text: 'que has encontrado',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+    const navigation = handler.classify({
+      text: 'que pasos has dado',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+
+    expect(page.statusQueryKind).toBe('browser_page');
+    expect(url.statusQueryKind).toBe('browser_url');
+    expect(links.statusQueryKind).toBe('browser_links');
+    expect(findings.statusQueryKind).toBe('browser_findings');
+    expect(navigation.statusQueryKind).toBe('browser_navigation');
+  });
+
+  it('classifies browser refinements without sending them to the model', () => {
+    const follow = handler.classify({
+      text: 'sigue el enlace mas relevante',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+    const findText = handler.classify({
+      text: 'busca consumo en la pagina',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+
+    expect(follow.kind).toBe('task_goal_refinement');
+    expect(follow.refinement).toMatchObject({
+      type: 'browser_follow_link',
+      value: 'most_relevant'
+    });
+    expect(findText.kind).toBe('task_goal_refinement');
+    expect(findText.refinement).toMatchObject({
+      type: 'browser_find_text',
+      value: 'consumo'
+    });
+  });
+
+  it('classifies browser opening failure questions as deterministic failure queries', () => {
+    const result = handler.classify({
+      text: 'por que no pudiste abrir la web',
+      session: createSession(),
+      activeTask: createBrowserTask()
+    });
+
+    expect(result.kind).toBe('task_status_query');
+    expect(result.statusQueryKind).toBe('failure');
   });
 
   it('asks for clarification when the goal correction is too vague', () => {

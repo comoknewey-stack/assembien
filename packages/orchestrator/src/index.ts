@@ -295,8 +295,23 @@ function isResearchTaskRequest(text: string): boolean {
   );
 }
 
+function isBrowserTaskRequest(text: string): boolean {
+  const normalized = normalizeIntentText(text);
+  return (
+    /\bhttps?:\/\/[^\s]+\b/i.test(text) &&
+    /(?:abre\s+esta\s+web|abre\s+esta\s+pagina|entra\s+en\s+esta\s+pagina|mira\s+esta\s+web|mira\s+esta\s+pagina|resume\s+esta\s+pagina|visita\s+esta\s+url|busca\s+en\s+esta\s+pagina|saca\s+los\s+enlaces\s+principales|open\s+this\s+(?:web|page)|visit\s+this\s+url|summarize\s+this\s+page|look\s+at\s+this\s+(?:site|page)|find\s+.+\s+on\s+this\s+page|extract\s+the\s+main\s+links)/i.test(
+      normalized
+    )
+  );
+}
+
 function isTaskPlanningRequest(text: string): boolean {
-  return isTaskCreateRequest(text) || isReportTaskRequest(text) || isResearchTaskRequest(text);
+  return (
+    isTaskCreateRequest(text) ||
+    isReportTaskRequest(text) ||
+    isResearchTaskRequest(text) ||
+    isBrowserTaskRequest(text)
+  );
 }
 
 function isTaskPlanRequest(text: string): boolean {
@@ -363,7 +378,7 @@ function isTaskCompletionRequest(text: string): boolean {
 
 function isTaskStateArtifactRequest(text: string): boolean {
   const normalized = normalizeIntentText(text);
-  return /^(?:donde esta el informe|donde esta el reporte|donde quedo el informe|donde guardaste el informe|donde se guardo el informe|ruta del informe|donde esta report md|que fuentes has encontrado|que fuentes encontraste|que fuentes estas usando|cuantas fuentes tienes|fuentes encontradas|que fuentes has leido de verdad|que paginas has podido leer|que paginas leiste|fuentes leidas|paginas leidas|que fuentes tienen evidencia fuerte|que fuentes son fuertes|cual es la mejor fuente|cual es la mejor fuente que encontraste|que fuentes son debiles o tangenciales|que fuentes son debiles|que fuentes son tangenciales|que limitaciones tiene este informe|que limitaciones tiene la investigacion|cuales son las limitaciones|que fuentes usaste solo como snippet|fuentes solo snippet|que fuentes son solo snippet|que parte sale solo de snippets|que parte del informe sale solo de snippets|hay base suficiente o no|hay base suficiente|hay base solida|hay base real|que fuentes descartaste|por que descartaste esa fuente|fuentes descartadas|que evidencia tienes|que evidencia has extraido|evidencia disponible|que artefactos se han generado|que artefactos generaste|que archivos has generado|que archivos generaste|artefactos generados|donde esta la carpeta|donde esta el workspace|donde esta la carpeta de trabajo|ruta de la carpeta|ruta del workspace|workspace|por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|where is the report|what sources have you found|what sources are you using|how many sources do you have|what sources did you actually read|what pages could you read|what pages did you read|what sources have strong evidence|which sources are strong|what is the best source|what is the best source you found|what sources are weak or tangential|what limitations does this report have|what are the limitations|what sources are snippet only|which sources are snippet only|what part of the report is snippet only|what part comes only from snippets|is there enough basis|is there enough evidence|is there a solid basis|what sources did you discard|why did you discard that source|discarded sources|what evidence do you have|what evidence did you extract|what artifacts were generated|where is the workspace|why did it fail|what happened|what was the error)$/.test(
+  return /^(?:donde esta el informe|donde esta el reporte|donde quedo el informe|donde guardaste el informe|donde se guardo el informe|ruta del informe|donde esta report md|que fuentes has encontrado|que fuentes encontraste|que fuentes estas usando|cuantas fuentes tienes|fuentes encontradas|que fuentes has leido de verdad|que paginas has podido leer|que paginas leiste|fuentes leidas|paginas leidas|que fuentes tienen evidencia fuerte|que fuentes son fuertes|cual es la mejor fuente|cual es la mejor fuente que encontraste|que fuentes son debiles o tangenciales|que fuentes son debiles|que fuentes son tangenciales|que limitaciones tiene este informe|que limitaciones tiene la investigacion|cuales son las limitaciones|que fuentes usaste solo como snippet|fuentes solo snippet|que fuentes son solo snippet|que parte sale solo de snippets|que parte del informe sale solo de snippets|hay base suficiente o no|hay base suficiente|hay base solida|hay base real|que fuentes descartaste|por que descartaste esa fuente|fuentes descartadas|que evidencia tienes|que evidencia has extraido|evidencia disponible|que artefactos se han generado|que artefactos generaste|que archivos has generado|que archivos generaste|artefactos generados|donde esta la carpeta|donde esta el workspace|donde esta la carpeta de trabajo|ruta de la carpeta|ruta del workspace|workspace|por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|que pagina has abierto|que has encontrado|que enlaces viste|en que url estas|que dice la pagina|que pasos has dado|where is the report|what sources have you found|what sources are you using|how many sources do you have|what sources did you actually read|what pages could you read|what pages did you read|what sources have strong evidence|which sources are strong|what is the best source|what is the best source you found|what sources are weak or tangential|what limitations does this report have|what are the limitations|what sources are snippet only|which sources are snippet only|what part of the report is snippet only|what part comes only from snippets|is there enough basis|is there enough evidence|is there a solid basis|what sources did you discard|why did you discard that source|discarded sources|what evidence do you have|what evidence did you extract|what artifacts were generated|where is the workspace|why did it fail|what happened|what was the error|what page did you open|what did you find|what links did you see|what url are you on|what does the page say|what steps did you take)$/.test(
     normalized
   );
 }
@@ -1036,6 +1051,10 @@ export class AssemOrchestrator {
 
   private isWebSearchConfigured(): boolean {
     return this.deps.webSearchProvider?.getStatus().configured ?? false;
+  }
+
+  private isBrowserAutomationAvailable(): boolean {
+    return this.deps.config.browserAutomationEnabled;
   }
 
   async createSession(): Promise<SessionSnapshot> {
@@ -2532,6 +2551,247 @@ export class AssemOrchestrator {
     return task.artifacts.find((artifact) => artifact.kind === 'directory');
   }
 
+  private isBrowserTask(task: AssemTask): boolean {
+    return (
+      task.plan?.taskType === 'browser_read_basic' ||
+      task.metadata?.taskType === 'browser_read_basic' ||
+      Boolean(task.metadata?.browser)
+    );
+  }
+
+  private getBrowserRecord(task: AssemTask): Record<string, unknown> | null {
+    const browser = task.metadata?.browser;
+    return browser && typeof browser === 'object'
+      ? (browser as Record<string, unknown>)
+      : null;
+  }
+
+  private getBrowserPagesVisited(task: AssemTask): Record<string, unknown>[] {
+    const value = this.getBrowserRecord(task)?.pagesVisited;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (page): page is Record<string, unknown> => typeof page === 'object' && page !== null
+    );
+  }
+
+  private getBrowserVisibleLinks(task: AssemTask): Record<string, unknown>[] {
+    const value = this.getBrowserRecord(task)?.visibleLinks;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (link): link is Record<string, unknown> => typeof link === 'object' && link !== null
+    );
+  }
+
+  private getBrowserNavigationLog(task: AssemTask): Record<string, unknown>[] {
+    const value = this.getBrowserRecord(task)?.navigationLog;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null
+    );
+  }
+
+  private getBrowserFindings(task: AssemTask): string[] {
+    const value = this.getBrowserRecord(task)?.findings;
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter(
+      (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0
+    );
+  }
+
+  private getBrowserError(task: AssemTask): string | undefined {
+    const value = this.getBrowserRecord(task)?.browserError;
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+
+    return this.readStringValue(this.getBrowserOpenTransport(task), 'openErrorMessage');
+  }
+
+  private getBrowserOpenTransport(task: AssemTask): Record<string, unknown> | null {
+    const browserRecord = this.getBrowserRecord(task);
+    const direct = browserRecord?.openTransport;
+    if (direct && typeof direct === 'object') {
+      return direct as Record<string, unknown>;
+    }
+
+    const lastSnapshot =
+      browserRecord?.lastSnapshot && typeof browserRecord.lastSnapshot === 'object'
+        ? (browserRecord.lastSnapshot as Record<string, unknown>)
+        : null;
+    const snapshotTransport = lastSnapshot?.transport;
+    return snapshotTransport && typeof snapshotTransport === 'object'
+      ? (snapshotTransport as Record<string, unknown>)
+      : null;
+  }
+
+  private getBrowserTransportNotes(task: AssemTask): string[] {
+    const recordValue = this.getBrowserRecord(task)?.transportNotes;
+    if (Array.isArray(recordValue)) {
+      return recordValue.filter(
+        (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0
+      );
+    }
+
+    const transportValue = this.getBrowserOpenTransport(task)?.transportNotes;
+    if (!Array.isArray(transportValue)) {
+      return [];
+    }
+
+    return transportValue.filter(
+      (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0
+    );
+  }
+
+  private readStringValue(record: Record<string, unknown> | null, key: string): string | undefined {
+    const value = record?.[key];
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private readBooleanValue(record: Record<string, unknown> | null, key: string): boolean | undefined {
+    const value = record?.[key];
+    return typeof value === 'boolean' ? value : undefined;
+  }
+
+  private renderBrowserTransportSummary(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const transport = this.getBrowserOpenTransport(task);
+    if (!transport) {
+      return language === 'es'
+        ? 'No hay diagnostico de transporte persistido.'
+        : 'No persisted transport diagnostics are available.';
+    }
+
+    const attemptedUrl =
+      this.readStringValue(transport, 'attemptedUrl') ??
+      this.getBrowserCurrentUrl(task) ??
+      (language === 'es' ? 'sin URL persistida' : 'no persisted URL');
+    const errorType =
+      this.readStringValue(transport, 'openErrorType') ??
+      (language === 'es' ? 'sin clasificar' : 'unclassified');
+    const errorMessage =
+      this.readStringValue(transport, 'openErrorMessage') ??
+      (language === 'es' ? 'sin mensaje persistido' : 'no persisted message');
+    const errorCause = this.readStringValue(transport, 'openErrorCause');
+    const attemptedAt = this.readStringValue(transport, 'openAttemptedAt');
+    const fallbackAttempted = this.readBooleanValue(transport, 'fallbackAttempted');
+    const fallbackSucceeded = this.readBooleanValue(transport, 'fallbackSucceeded');
+    const fallbackMode =
+      this.readStringValue(transport, 'fallbackMode') ??
+      (language === 'es' ? 'sin fallback' : 'no fallback');
+    const transportNotes = this.getBrowserTransportNotes(task);
+
+    if (language === 'es') {
+      const fallbackSummary =
+        fallbackAttempted === true
+          ? `Fallback: ${fallbackMode}${fallbackSucceeded ? ' correcto' : ' fallido'}.`
+          : `Fallback: no intentado (${fallbackMode}).`;
+      const notesSummary =
+        transportNotes.length > 0
+          ? ` Notas de transporte: ${transportNotes.join(' ')}`
+          : '';
+      return `URL afectada: ${attemptedUrl}. Tipo de fallo: ${errorType}. Mensaje: ${errorMessage}.${errorCause ? ` Causa persistida: ${errorCause}.` : ''}${attemptedAt ? ` Intento registrado: ${attemptedAt}.` : ''} ${fallbackSummary}${notesSummary}`.trim();
+    }
+
+    const fallbackSummary =
+      fallbackAttempted === true
+        ? `Fallback: ${fallbackMode}${fallbackSucceeded ? ' succeeded' : ' failed'}.`
+        : `Fallback: not attempted (${fallbackMode}).`;
+    const notesSummary =
+      transportNotes.length > 0
+        ? ` Transport notes: ${transportNotes.join(' ')}`
+        : '';
+    return `Affected URL: ${attemptedUrl}. Error type: ${errorType}. Message: ${errorMessage}.${errorCause ? ` Persisted cause: ${errorCause}.` : ''}${attemptedAt ? ` Attempt recorded at: ${attemptedAt}.` : ''} ${fallbackSummary}${notesSummary}`.trim();
+  }
+
+  private getBrowserCurrentUrl(task: AssemTask): string | undefined {
+    const value = this.getBrowserRecord(task)?.currentUrl;
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private getBrowserCurrentTitle(task: AssemTask): string | undefined {
+    const value = this.getBrowserRecord(task)?.currentTitle;
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private getBrowserLastFindResult(task: AssemTask): Record<string, unknown> | null {
+    const value = this.getBrowserRecord(task)?.lastFindResult;
+    return value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private findBrowserNotesArtifact(
+    task: AssemTask
+  ): AssemTask['artifacts'][number] | undefined {
+    return task.artifacts.find((artifact) => {
+      const filePath = artifact.filePath?.toLowerCase() ?? '';
+      return filePath.endsWith('/browser-notes.md') || filePath.endsWith('\\browser-notes.md');
+    });
+  }
+
+  private findBrowserSnapshotArtifact(
+    task: AssemTask
+  ): AssemTask['artifacts'][number] | undefined {
+    return task.artifacts.find((artifact) => {
+      const filePath = artifact.filePath?.toLowerCase() ?? '';
+      return filePath.endsWith('/page-snapshot.json') || filePath.endsWith('\\page-snapshot.json');
+    });
+  }
+
+  private findBrowserNavigationArtifact(
+    task: AssemTask
+  ): AssemTask['artifacts'][number] | undefined {
+    return task.artifacts.find((artifact) => {
+      const filePath = artifact.filePath?.toLowerCase() ?? '';
+      return filePath.endsWith('/navigation-log.json') || filePath.endsWith('\\navigation-log.json');
+    });
+  }
+
+  private formatBrowserLink(link: Record<string, unknown>, index: number): string {
+    const text =
+      typeof link.text === 'string' && link.text.trim()
+        ? link.text
+        : `Enlace ${index + 1}`;
+    const url = typeof link.url === 'string' ? link.url : '';
+    const safety =
+      typeof link.safety === 'string' && link.safety.trim()
+        ? ` [${link.safety}]`
+        : '';
+    return `${index + 1}. ${text}${safety} - ${url}`;
+  }
+
+  private formatBrowserPage(page: Record<string, unknown>, index: number): string {
+    const title =
+      typeof page.title === 'string' && page.title.trim()
+        ? page.title
+        : `Pagina ${index + 1}`;
+    const url =
+      typeof page.finalUrl === 'string' && page.finalUrl.trim()
+        ? page.finalUrl
+        : typeof page.url === 'string'
+          ? page.url
+          : '';
+    const status =
+      typeof page.status === 'string' && page.status.trim()
+        ? ` [${page.status}]`
+        : '';
+    return `${index + 1}. ${title}${status} - ${url}`;
+  }
+
   private renderInterruptStatusQuery(
     task: AssemTask,
     queryKind: TaskStatusQueryKind,
@@ -2577,6 +2837,16 @@ export class AssemOrchestrator {
         return this.renderTaskWorkspaceLocation(task, language);
       case 'failure':
         return this.renderTaskFailure(task, language);
+      case 'browser_page':
+        return this.renderTaskBrowserPage(task, language);
+      case 'browser_url':
+        return this.renderTaskBrowserUrl(task, language);
+      case 'browser_links':
+        return this.renderTaskBrowserLinks(task, language);
+      case 'browser_findings':
+        return this.renderTaskBrowserFindings(task, language);
+      case 'browser_navigation':
+        return this.renderTaskBrowserNavigation(task, language);
       case 'status':
       default:
         return this.renderTaskStatus(task, language);
@@ -2631,6 +2901,27 @@ export class AssemOrchestrator {
   }
 
   private renderTaskFailure(task: AssemTask, language: SupportedLanguage): string {
+    if (this.isBrowserTask(task)) {
+      const phase =
+        task.currentPhase ?? (language === 'es' ? 'sin fase definida' : 'not set');
+      const reason =
+        this.getBrowserError(task) ??
+        task.failureReason ??
+        (language === 'es' ? 'no hay motivo persistido' : 'no persisted reason');
+      const currentUrl = this.getBrowserCurrentUrl(task);
+      const pagesVisited = this.getBrowserPagesVisited(task).length;
+      const notesArtifact = this.findBrowserNotesArtifact(task);
+      const snapshotArtifact = this.findBrowserSnapshotArtifact(task);
+      const navigationArtifact = this.findBrowserNavigationArtifact(task);
+      const transportSummary = this.renderBrowserTransportSummary(task, language);
+
+      if (language === 'es') {
+        return `La tarea web "${task.objective}" no tiene un resultado completado fiable. Estado real: ${this.describeTaskStatus(task.status, language)}. Fase registrada: ${phase}. Motivo: ${reason}. ${transportSummary} URL persistida: ${currentUrl ?? 'sin URL persistida'}. Paginas visitadas: ${pagesVisited}. ${notesArtifact?.filePath ? `Notas registradas: ${notesArtifact.filePath}.` : 'No hay browser-notes.md registrado.'} ${snapshotArtifact?.filePath ? `Snapshot registrado: ${snapshotArtifact.filePath}.` : 'No hay page-snapshot.json registrado.'} ${navigationArtifact?.filePath ? `Log de navegacion: ${navigationArtifact.filePath}.` : 'No hay navigation-log.json registrado.'}`;
+      }
+
+      return `The web task "${task.objective}" does not have a reliable completed result. Real status: ${this.describeTaskStatus(task.status, language)}. Recorded phase: ${phase}. Reason: ${reason}. ${transportSummary} Persisted URL: ${currentUrl ?? 'no persisted URL'}. Visited pages: ${pagesVisited}. ${notesArtifact?.filePath ? `Registered notes: ${notesArtifact.filePath}.` : 'No browser-notes.md artifact is registered.'} ${snapshotArtifact?.filePath ? `Registered snapshot: ${snapshotArtifact.filePath}.` : 'No page-snapshot.json artifact is registered.'} ${navigationArtifact?.filePath ? `Navigation log: ${navigationArtifact.filePath}.` : 'No navigation-log.json artifact is registered.'}`;
+    }
+
     const phase =
       task.currentPhase ?? (language === 'es' ? 'sin fase definida' : 'not set');
     const reason =
@@ -2721,6 +3012,138 @@ export class AssemOrchestrator {
     return language === 'es'
       ? `Artefactos reales registrados para "${task.objective}": ${list}`
       : `Registered real artifacts for "${task.objective}": ${list}`;
+  }
+
+  private renderTaskBrowserPage(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    if (this.hasTaskFailureGuardrail(task)) {
+      return this.renderTaskFailure(task, language);
+    }
+
+    const title = this.getBrowserCurrentTitle(task);
+    const url = this.getBrowserCurrentUrl(task);
+    const pagesVisited = this.getBrowserPagesVisited(task).length;
+
+    if (!title && !url) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" todavia no tiene una pagina abierta persistida.`
+        : `The task "${task.objective}" does not have a persisted opened page yet.`;
+    }
+
+    return language === 'es'
+      ? `La pagina persistida actual para "${task.objective}" es ${title ?? 'sin titulo'}${url ? ` en ${url}` : ''}. Paginas visitadas: ${pagesVisited}.`
+      : `The current persisted page for "${task.objective}" is ${title ?? 'untitled'}${url ? ` at ${url}` : ''}. Visited pages: ${pagesVisited}.`;
+  }
+
+  private renderTaskBrowserUrl(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    if (this.hasTaskFailureGuardrail(task)) {
+      return this.renderTaskFailure(task, language);
+    }
+
+    const url = this.getBrowserCurrentUrl(task);
+    if (!url) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" todavia no tiene una URL persistida.`
+        : `The task "${task.objective}" does not have a persisted URL yet.`;
+    }
+
+    return language === 'es'
+      ? `La URL actual persistida para "${task.objective}" es: ${url}.`
+      : `The current persisted URL for "${task.objective}" is: ${url}.`;
+  }
+
+  private renderTaskBrowserLinks(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    if (this.hasTaskFailureGuardrail(task)) {
+      return this.renderTaskFailure(task, language);
+    }
+
+    const links = this.getBrowserVisibleLinks(task);
+    if (links.length === 0) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" no tiene enlaces visibles persistidos todavia.`
+        : `The task "${task.objective}" does not have persisted visible links yet.`;
+    }
+
+    const list = links.slice(0, 8).map((link, index) => this.formatBrowserLink(link, index)).join(' ');
+    return language === 'es'
+      ? `Enlaces visibles persistidos para "${task.objective}": ${list}`
+      : `Persisted visible links for "${task.objective}": ${list}`;
+  }
+
+  private renderTaskBrowserFindings(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    if (this.hasTaskFailureGuardrail(task)) {
+      return this.renderTaskFailure(task, language);
+    }
+
+    const findings = this.getBrowserFindings(task);
+    if (findings.length === 0) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" todavia no tiene hallazgos de navegador persistidos.`
+        : `The task "${task.objective}" does not have persisted browser findings yet.`;
+    }
+
+    const findResult = this.getBrowserLastFindResult(task);
+    const findSummary =
+      findResult && typeof findResult.query === 'string'
+        ? language === 'es'
+          ? ` Ultima busqueda en pagina: "${findResult.query}" -> ${findResult.found ? 'encontrada' : 'no encontrada'}.`
+          : ` Last page query: "${findResult.query}" -> ${findResult.found ? 'found' : 'not found'}.`
+        : '';
+    return language === 'es'
+      ? `Hallazgos persistidos para "${task.objective}": ${findings.join(' ')}${findSummary}`
+      : `Persisted findings for "${task.objective}": ${findings.join(' ')}${findSummary}`;
+  }
+
+  private renderTaskBrowserNavigation(
+    task: AssemTask,
+    language: SupportedLanguage
+  ): string {
+    const navigationLog = this.getBrowserNavigationLog(task);
+    if (navigationLog.length === 0) {
+      return language === 'es'
+        ? `La tarea "${task.objective}" no tiene pasos de navegacion persistidos todavia.`
+        : `The task "${task.objective}" does not have persisted navigation steps yet.`;
+    }
+
+    const list = navigationLog
+      .slice(0, 8)
+      .map((entry, index) => {
+        const action =
+          typeof entry.action === 'string' ? entry.action : 'navigate';
+        const toUrl =
+          typeof entry.toUrl === 'string' ? entry.toUrl : '';
+        const blocked =
+          entry.blocked === true
+            ? language === 'es'
+              ? ' [bloqueado]'
+              : ' [blocked]'
+            : '';
+        const transport =
+          entry.transport && typeof entry.transport === 'object'
+            ? (entry.transport as Record<string, unknown>)
+            : null;
+        const errorType =
+          transport && typeof transport.openErrorType === 'string'
+            ? ` [${transport.openErrorType}]`
+            : '';
+        return `${index + 1}. ${action}${blocked}${errorType}${toUrl ? ` -> ${toUrl}` : ''}`;
+      })
+      .join(' ');
+
+    return language === 'es'
+      ? `Pasos de navegacion persistidos para "${task.objective}": ${list}`
+      : `Persisted navigation steps for "${task.objective}": ${list}`;
   }
 
   private renderTaskArtifactsSummary(
@@ -3315,13 +3738,19 @@ export class AssemOrchestrator {
 
     if (isTaskPlanningRequest(text)) {
       const activeProfile = await this.deps.memoryBackend.getActiveProfile();
+      const browserTaskIntent = isBrowserTaskRequest(text);
       const planResult = this.planner.createPlan({
         session,
         text,
-        objective: isTaskCreateRequest(text) ? extractTaskObjective(text) ?? undefined : undefined,
+        objective:
+          isTaskCreateRequest(text) && !browserTaskIntent
+            ? extractTaskObjective(text) ?? undefined
+            : undefined,
         activeProfile: activeProfile ? summarizeProfile(activeProfile) : null,
         webSearchAvailable: this.isWebSearchConfigured(),
-        privacyAllowsWebSearch: session.activeMode.privacy !== 'local_only'
+        privacyAllowsWebSearch: session.activeMode.privacy !== 'local_only',
+        browserAutomationAvailable: this.isBrowserAutomationAvailable(),
+        privacyAllowsBrowserAutomation: session.activeMode.privacy !== 'local_only'
       });
 
       if (!planResult.accepted || !planResult.plan) {
@@ -3550,22 +3979,29 @@ export class AssemOrchestrator {
     const isResearchTask =
       task.plan?.taskType === 'research_report_basic' ||
       task.metadata?.taskType === 'research_report_basic';
+    const isBrowserTask = this.isBrowserTask(task);
 
     if (language === 'es') {
       const researchIntro = isResearchTask
         ? ' Me pongo con ello: buscare fuentes web configuradas, seleccionare resultados utiles y preparare report.md, summary.txt y sources.json solo si hay fuentes reales.'
         : '';
+      const browserIntro = isBrowserTask
+        ? ' Me pongo con ello: abrire la URL objetivo, extraere texto visible y enlaces seguros, y guardare browser-notes.md, page-snapshot.json y navigation-log.json solo con estado web persistido real.'
+        : '';
       return previousTaskChanged
-        ? `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.${researchIntro} La tarea anterior "${previousActiveTask.objective}" ha quedado en pausa.`
-        : `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.${researchIntro}`;
+        ? `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.${researchIntro}${browserIntro} La tarea anterior "${previousActiveTask.objective}" ha quedado en pausa.`
+        : `He abierto una nueva tarea activa: "${task.objective}". Fase actual: ${phase}.${researchIntro}${browserIntro}`;
     }
 
     const researchIntro = isResearchTask
       ? ' I will search configured web sources, select useful results and prepare report.md, summary.txt and sources.json only when real sources are available.'
       : '';
+    const browserIntro = isBrowserTask
+      ? ' I will open the target URL, extract visible text and safe links, and persist browser-notes.md, page-snapshot.json and navigation-log.json using only grounded web state.'
+      : '';
     return previousTaskChanged
-      ? `I opened a new active task: "${task.objective}". Current phase: ${phase}.${researchIntro} The previous task "${previousActiveTask.objective}" is now paused.`
-      : `I opened a new active task: "${task.objective}". Current phase: ${phase}.${researchIntro}`;
+      ? `I opened a new active task: "${task.objective}". Current phase: ${phase}.${researchIntro}${browserIntro} The previous task "${previousActiveTask.objective}" is now paused.`
+      : `I opened a new active task: "${task.objective}". Current phase: ${phase}.${researchIntro}${browserIntro}`;
   }
 
   private renderTaskStatus(task: AssemTask, language: SupportedLanguage): string {

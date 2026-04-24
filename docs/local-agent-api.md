@@ -471,3 +471,30 @@ Task creation example:
 - The local file tool refuses path traversal and any path outside the sandbox root.
 - Writes stay inside the sandbox root even in `live` mode.
 - The web page reader accepts only safe public `http`/`https` targets, rejects private/local destinations and treats fetched page text as untrusted evidence instead of instructions.
+- Browser Automation v1 inherits the same web-safety model and only exposes bounded read/navigation tools. Action-like links are blocked or treated as requiring confirmation instead of being followed automatically.
+
+## Browser Automation v1
+
+Browser Automation v1 is exposed through the same local-agent runtime and task APIs used by Planner, Task Runtime and Interrupt Handler.
+
+Runtime/tool behavior in this phase:
+
+- open a public page
+- return a persisted page snapshot
+- extract visible text
+- list visible links
+- search text within the current page snapshot
+- follow only safe navigation links
+
+Generated artifacts for `browser_read_basic`:
+
+- `browser-notes.md`
+- `page-snapshot.json`
+- `navigation-log.json`
+
+Mode rules:
+
+- `local_only` blocks browser task creation before execution
+- if browser automation is disabled in config, the planner refuses the task honestly
+
+Browser Automation v1 is not a full browser agent and does not support login, credentials, payments, uploads or irreversible web actions.

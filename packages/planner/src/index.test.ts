@@ -176,6 +176,111 @@ describe('DeterministicTaskPlanner', () => {
     expect(result.reason).toBe('web_search_unconfigured');
   });
 
+  it('creates a valid browser_read_basic plan from a safe page reading request', () => {
+    const result = planner.createPlan({
+      session: createSession('balanced'),
+      text: 'abre esta web https://example.com y dime de que trata',
+      browserAutomationAvailable: true,
+      privacyAllowsBrowserAutomation: true
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.plan).toMatchObject({
+      taskType: 'browser_read_basic'
+    });
+    expect(result.plan?.steps.map((step) => step.id)).toEqual([
+      'prepare-workspace',
+      'open-page',
+      'extract-page',
+      'follow-links',
+      'extract-findings',
+      'write-browser-notes',
+      'write-browser-snapshot',
+      'write-navigation-log'
+    ]);
+  });
+
+  it('blocks browser automation in local_only before creating a plan', () => {
+    const result = planner.createPlan({
+      session: createSession('local_only'),
+      text: 'abre esta web https://example.com y dime de que trata',
+      browserAutomationAvailable: true,
+      privacyAllowsBrowserAutomation: false
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBe('privacy_blocks_browser_automation');
+  });
+
+  it('blocks browser automation when the runtime provider is disabled', () => {
+    const result = planner.createPlan({
+      session: createSession('balanced'),
+      text: 'abre esta web https://example.com y dime de que trata',
+      browserAutomationAvailable: false,
+      privacyAllowsBrowserAutomation: true
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBe('browser_automation_unavailable');
+  });
+
+  it('stores browser refinements safely on pending browser steps', () => {
+    const browserPlan = planner.createPlan({
+      session: createSession('balanced'),
+      text: 'abre esta web https://example.com y busca consumo en la pagina',
+      browserAutomationAvailable: true,
+      privacyAllowsBrowserAutomation: true
+    }).plan;
+
+    expect(browserPlan).toBeTruthy();
+
+    const task: AssemTask = {
+      id: 'task-browser-plan',
+      sessionId: 'session-plan',
+      objective: browserPlan!.objective,
+      status: 'active',
+      progressPercent: 10,
+      currentPhase: 'Abrir pagina inicial',
+      currentStepId: 'open-page',
+      steps: browserPlan!.steps.map((step, index) => ({
+        id: step.id,
+        label: step.label,
+        status: index === 0 ? 'completed' : index === 1 ? 'active' : 'pending',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+        completedAt: index === 0 ? new Date().toISOString() : undefined
+      })),
+      artifacts: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      plan: browserPlan!,
+      metadata: {
+        taskType: 'browser_read_basic'
+      }
+    };
+
+    const refinement: TaskRefinement = {
+      id: 'ref-browser-find',
+      createdAt: new Date().toISOString(),
+      category: 'goal',
+      type: 'browser_find_text',
+      instruction: 'busca consumo en la pagina',
+      label: 'Buscar en pagina: consumo',
+      value: 'consumo'
+    };
+
+    const result = planner.refinePlan(task, refinement);
+
+    expect(result.accepted).toBe(true);
+    expect(result.plan?.refinements.at(-1)).toMatchObject({
+      type: 'browser_find_text',
+      value: 'consumo'
+    });
+    expect(result.plan?.restrictions.join(' ')).toContain('Solo lectura');
+  });
+
   it('asks for clarification when the refinement is too generic to apply safely', () => {
     const task = createTaskWithPlan();
     const refinement: TaskRefinement = {

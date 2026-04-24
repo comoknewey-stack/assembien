@@ -44,6 +44,12 @@ const trackedKeys = [
   'ASSEM_WEB_PAGE_MIN_TEXT_CHARS',
   'ASSEM_WEB_PAGE_MIN_TEXT_DENSITY',
   'ASSEM_WEB_PAGE_MAX_LINK_DENSITY',
+  'ASSEM_BROWSER_AUTOMATION_ENABLED',
+  'ASSEM_BROWSER_MAX_PAGES_PER_TASK',
+  'ASSEM_BROWSER_MAX_LINKS_PER_PAGE',
+  'ASSEM_BROWSER_TEXT_MAX_CHARS',
+  'ASSEM_BROWSER_TIMEOUT_MS',
+  'ASSEM_BROWSER_ALLOW_SCREENSHOTS',
   'ASSEM_ALLOWED_ORIGINS'
 ] as const;
 
@@ -206,6 +212,12 @@ describe('createAssemConfig', () => {
     process.env.ASSEM_WEB_PAGE_MIN_TEXT_CHARS = '320';
     process.env.ASSEM_WEB_PAGE_MIN_TEXT_DENSITY = '0.27';
     process.env.ASSEM_WEB_PAGE_MAX_LINK_DENSITY = '0.48';
+    process.env.ASSEM_BROWSER_AUTOMATION_ENABLED = 'true';
+    process.env.ASSEM_BROWSER_MAX_PAGES_PER_TASK = '99';
+    process.env.ASSEM_BROWSER_MAX_LINKS_PER_PAGE = '99';
+    process.env.ASSEM_BROWSER_TEXT_MAX_CHARS = '999999';
+    process.env.ASSEM_BROWSER_TIMEOUT_MS = '19000';
+    process.env.ASSEM_BROWSER_ALLOW_SCREENSHOTS = 'true';
 
     const config = createAssemConfig();
 
@@ -223,5 +235,11 @@ describe('createAssemConfig', () => {
     expect(config.webPageMinTextChars).toBe(320);
     expect(config.webPageMinTextDensity).toBe(0.27);
     expect(config.webPageMaxLinkDensity).toBe(0.48);
+    expect(config.browserAutomationEnabled).toBe(true);
+    expect(config.browserMaxPagesPerTask).toBe(5);
+    expect(config.browserMaxLinksPerPage).toBe(40);
+    expect(config.browserTextMaxChars).toBe(50000);
+    expect(config.browserTimeoutMs).toBe(19000);
+    expect(config.browserAllowScreenshots).toBe(true);
   });
 });

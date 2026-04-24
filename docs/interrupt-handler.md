@@ -195,3 +195,32 @@ Interrupt Handler v1 does not do:
 - rewriting already completed artifacts
 
 In this phase it is a deterministic control-and-routing layer that makes ASSEM feel interruptible without pretending to have a full planner.
+
+## Browser Automation v1 in Interrupt Handler
+
+Interrupt Handler now also classifies browser-task follow-ups deterministically when the active task is `browser_read_basic`.
+
+Supported browser status queries:
+
+- `que pagina has abierto`
+- `en que url estas`
+- `que enlaces viste`
+- `que has encontrado`
+- `que pasos has dado`
+
+Supported browser refinements:
+
+- `sigue el enlace mas relevante`
+- `busca X en la pagina`
+- `ve a la fuente oficial`
+- `no sigas blogs`
+
+These answers come from persisted browser task state only:
+
+- current URL and title
+- visible links
+- findings
+- navigation log
+- persisted artifacts
+
+ASSEM does not infer unseen page content from the model when answering those browser questions.

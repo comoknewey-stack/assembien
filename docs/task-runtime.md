@@ -192,9 +192,39 @@ This phase does not include:
 - planner-generated task graphs
 - multiple task types beyond `research_report_basic`
 - sub-agents or worker delegation
-- browser automation
 - desktop automation
 - full-page scraping or unlimited source-content extraction
 - checkpointed mid-step recovery
 - complex conflict resolution between concurrent runtime tasks
 - automatic rewriting of already completed artifacts after a late refinement
+
+## Browser Automation v1 in Task Runtime
+
+Task Runtime now also executes `browser_read_basic`.
+
+Real runtime phases:
+
+- `prepare-workspace`
+- `open-page`
+- `extract-page`
+- `follow-links`
+- `extract-findings`
+- `write-browser-notes`
+- `write-browser-snapshot`
+- `write-navigation-log`
+
+Generated artifacts:
+
+- `browser-notes.md`
+- `page-snapshot.json`
+- `navigation-log.json`
+
+Browser Runtime v1 stays intentionally narrow:
+
+- safe public-page opening
+- visible-text extraction
+- visible-link listing
+- small bounded safe-link following
+- persisted findings and navigation state
+
+It still does not perform free-form browser automation, logins, purchases or sensitive form submission.

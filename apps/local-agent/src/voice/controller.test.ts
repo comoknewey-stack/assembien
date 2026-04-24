@@ -67,6 +67,12 @@ function createConfig(overrides: Partial<AssemConfig> = {}): AssemConfig {
     webPageMinTextChars: 220,
     webPageMinTextDensity: 0.18,
     webPageMaxLinkDensity: 0.55,
+    browserAutomationEnabled: true,
+    browserMaxPagesPerTask: 3,
+    browserMaxLinksPerPage: 20,
+    browserTextMaxChars: 12_000,
+    browserTimeoutMs: 15_000,
+    browserAllowScreenshots: false,
     allowedOrigins: [],
     ...overrides
   };

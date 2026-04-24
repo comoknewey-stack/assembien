@@ -185,7 +185,7 @@ export type TaskArtifactKind =
   | 'report'
   | 'other';
 
-export type TaskType = 'research_report_basic';
+export type TaskType = 'research_report_basic' | 'browser_read_basic';
 
 export type TaskInterruptKind =
   | 'task_status_query'
@@ -208,6 +208,8 @@ export type TaskRefinementType =
   | 'source_preference'
   | 'source_exclusion'
   | 'recency'
+  | 'browser_follow_link'
+  | 'browser_find_text'
   | 'general';
 
 export type TaskStatusQueryKind =
@@ -231,7 +233,12 @@ export type TaskStatusQueryKind =
   | 'report_location'
   | 'artifacts'
   | 'workspace_location'
-  | 'failure';
+  | 'failure'
+  | 'browser_page'
+  | 'browser_url'
+  | 'browser_links'
+  | 'browser_findings'
+  | 'browser_navigation';
 
 export interface ActiveMode {
   privacy: PrivacyMode;
@@ -679,6 +686,209 @@ export interface ResearchTaskMetadata {
   reportReadiness?: ResearchReportReadiness;
 }
 
+export type BrowserPageStatus =
+  | 'open'
+  | 'navigated'
+  | 'closed'
+  | 'blocked'
+  | 'error';
+
+export type BrowserOpenErrorType =
+  | 'dns_error'
+  | 'tls_error'
+  | 'timeout'
+  | 'connection_refused'
+  | 'redirect_error'
+  | 'http_error'
+  | 'content_blocked'
+  | 'unsupported_content_type'
+  | 'network_error'
+  | 'unknown_error';
+
+export type BrowserFallbackMode = 'none' | 'readonly_fetch';
+
+export type BrowserLinkSafety =
+  | 'safe_navigation'
+  | 'requires_confirmation'
+  | 'blocked';
+
+export interface BrowserOpenTransportRecord {
+  attemptedUrl: string;
+  finalUrl?: string;
+  openAttemptedAt: string;
+  openErrorType?: BrowserOpenErrorType;
+  openErrorMessage?: string;
+  openErrorCause?: string;
+  fallbackAttempted: boolean;
+  fallbackSucceeded: boolean;
+  fallbackMode: BrowserFallbackMode;
+  transportNotes: string[];
+  httpStatus?: number;
+  contentType?: string;
+}
+
+export interface BrowserPageLinkRecord {
+  id: string;
+  text: string;
+  url: string;
+  domain: string;
+  sameDomain: boolean;
+  externalDomain: boolean;
+  safety: BrowserLinkSafety;
+  reason?: string;
+}
+
+export interface BrowserPageSnapshot {
+  pageId: string;
+  url: string;
+  finalUrl: string;
+  title?: string;
+  openedAt: string;
+  lastUpdatedAt: string;
+  snapshotSummary: string;
+  visibleTextExcerpt?: string;
+  links: BrowserPageLinkRecord[];
+  status: BrowserPageStatus;
+  safetyNotes?: string[];
+  errorMessage?: string;
+  transport?: BrowserOpenTransportRecord;
+}
+
+export interface BrowserNavigationEntry {
+  id: string;
+  pageId: string;
+  action: 'open' | 'navigate' | 'find' | 'close';
+  fromUrl?: string;
+  toUrl?: string;
+  title?: string;
+  detail?: string;
+  recordedAt: string;
+  blocked?: boolean;
+  reason?: string;
+  transport?: BrowserOpenTransportRecord;
+}
+
+export interface BrowserOpenPageInput {
+  url: string;
+}
+
+export interface BrowserOpenPageOutput {
+  pageId: string;
+  snapshot: BrowserPageSnapshot;
+}
+
+export interface BrowserPageReferenceInput {
+  pageId: string;
+}
+
+export interface BrowserExtractVisibleTextInput extends BrowserPageReferenceInput {
+  maxChars?: number;
+}
+
+export interface BrowserExtractVisibleTextOutput {
+  pageId: string;
+  excerpt: string;
+  contentLength: number;
+}
+
+export interface BrowserListVisibleLinksInput extends BrowserPageReferenceInput {
+  maxLinks?: number;
+}
+
+export interface BrowserListVisibleLinksOutput {
+  pageId: string;
+  links: BrowserPageLinkRecord[];
+}
+
+export interface BrowserClickLinkInput extends BrowserPageReferenceInput {
+  linkId: string;
+}
+
+export interface BrowserClickLinkOutput {
+  pageId: string;
+  snapshot: BrowserPageSnapshot;
+  navigation: BrowserNavigationEntry;
+}
+
+export interface BrowserFindOnPageInput extends BrowserPageReferenceInput {
+  query: string;
+}
+
+export interface BrowserFindOnPageOutput {
+  pageId: string;
+  query: string;
+  found: boolean;
+  matchCount: number;
+  excerpt?: string;
+}
+
+export interface BrowserClosePageOutput {
+  pageId: string;
+  closedAt: string;
+}
+
+export interface BrowserAutomationProviderStatus {
+  providerId: string;
+  configured: boolean;
+  available: boolean;
+  enabled: boolean;
+  maxPagesPerTask: number;
+  maxLinksPerPage: number;
+  textMaxChars: number;
+  timeoutMs: number;
+  allowScreenshots: boolean;
+  lastError?: string;
+}
+
+export interface BrowserAutomationProvider {
+  id: string;
+  label: string;
+  enabled: boolean;
+  getStatus(): BrowserAutomationProviderStatus;
+  openPage(input: BrowserOpenPageInput): Promise<BrowserOpenPageOutput>;
+  getPageSnapshot(input: BrowserPageReferenceInput): Promise<BrowserPageSnapshot>;
+  extractVisibleText(
+    input: BrowserExtractVisibleTextInput
+  ): Promise<BrowserExtractVisibleTextOutput>;
+  listVisibleLinks(
+    input: BrowserListVisibleLinksInput
+  ): Promise<BrowserListVisibleLinksOutput>;
+  clickLink(input: BrowserClickLinkInput): Promise<BrowserClickLinkOutput>;
+  findOnPage(input: BrowserFindOnPageInput): Promise<BrowserFindOnPageOutput>;
+  closePage(input: BrowserPageReferenceInput): Promise<BrowserClosePageOutput>;
+}
+
+export interface BrowserTaskVisitedPage extends BrowserPageSnapshot {
+  navigationIndex: number;
+}
+
+export interface BrowserTaskMetadata {
+  initialUrl: string;
+  currentPageId?: string;
+  currentUrl?: string;
+  currentTitle?: string;
+  targetQuery?: string;
+  targetInstruction?: string;
+  pagesVisited: BrowserTaskVisitedPage[];
+  lastSnapshot?: BrowserPageSnapshot;
+  lastFindResult?: BrowserFindOnPageOutput;
+  visibleTextExcerpt?: string;
+  visibleLinks?: BrowserPageLinkRecord[];
+  navigationLog: BrowserNavigationEntry[];
+  findings: string[];
+  safetyNotes: string[];
+  followUpMode?: 'summarize' | 'links' | 'find_text';
+  blockedActions: Array<{
+    action: string;
+    url?: string;
+    reason: string;
+    recordedAt: string;
+  }>;
+  openTransport?: BrowserOpenTransportRecord;
+  transportNotes?: string[];
+  browserError?: string;
+}
+
 export interface WebSearchRuntimeStatus {
   providerId?: string;
   configured: boolean;
@@ -697,6 +907,20 @@ export interface WebPageReaderRuntimeStatus {
   maxSources: number;
   timeoutMs: number;
   maxContentChars: number;
+  privacyAllowsWeb: boolean;
+  lastError?: string;
+}
+
+export interface BrowserAutomationRuntimeStatus {
+  providerId?: string;
+  configured: boolean;
+  available: boolean;
+  enabled: boolean;
+  maxPagesPerTask: number;
+  maxLinksPerPage: number;
+  textMaxChars: number;
+  timeoutMs: number;
+  allowScreenshots: boolean;
   privacyAllowsWeb: boolean;
   lastError?: string;
 }
@@ -1019,6 +1243,8 @@ export interface TaskPlanningContext {
   initialRefinements?: TaskRefinement[];
   webSearchAvailable?: boolean;
   privacyAllowsWebSearch?: boolean;
+  browserAutomationAvailable?: boolean;
+  privacyAllowsBrowserAutomation?: boolean;
   now?: Date;
 }
 
@@ -1282,6 +1508,7 @@ export interface SystemStateSnapshot {
   providerRuntime: ProviderRuntimeStatus;
   webSearch: WebSearchRuntimeStatus;
   webPageReader: WebPageReaderRuntimeStatus;
+  browserAutomation: BrowserAutomationRuntimeStatus;
   taskManager: TaskManagerStateSnapshot;
   voice: VoiceSystemState;
   profiles: ProfileSummary[];
@@ -1816,5 +2043,11 @@ export interface AssemConfig {
   webPageMinTextChars: number;
   webPageMinTextDensity: number;
   webPageMaxLinkDensity: number;
+  browserAutomationEnabled: boolean;
+  browserMaxPagesPerTask: number;
+  browserMaxLinksPerPage: number;
+  browserTextMaxChars: number;
+  browserTimeoutMs: number;
+  browserAllowScreenshots: boolean;
   allowedOrigins: string[];
 }

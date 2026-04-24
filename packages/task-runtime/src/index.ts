@@ -47,6 +47,8 @@ import type {
   WebSearchResult
 } from '@assem/shared-types';
 
+import { BrowserReadBasicTaskRunner } from './browser-read-basic';
+
 interface TaskRuntimeDeps {
   taskManager: TaskManager;
   sessionStore: SessionStore;
@@ -62,6 +64,9 @@ interface TaskRuntimeDeps {
   researchPageMinTextChars?: number;
   researchPageMinTextDensity?: number;
   researchPageMaxLinkDensity?: number;
+  browserMaxPagesPerTask?: number;
+  browserMaxLinksPerPage?: number;
+  browserTextMaxChars?: number;
 }
 
 interface TaskRuntimeOptions {
@@ -2560,6 +2565,13 @@ export class TaskRuntimeExecutor implements TaskRuntime {
         pageFetchMinTextChars: deps.researchPageMinTextChars,
         pageFetchMinTextDensity: deps.researchPageMinTextDensity,
         pageFetchMaxLinkDensity: deps.researchPageMaxLinkDensity
+      })
+    );
+    this.registerRunner(
+      new BrowserReadBasicTaskRunner({
+        maxPagesPerTask: deps.browserMaxPagesPerTask,
+        maxLinksPerPage: deps.browserMaxLinksPerPage,
+        textMaxChars: deps.browserTextMaxChars
       })
     );
   }

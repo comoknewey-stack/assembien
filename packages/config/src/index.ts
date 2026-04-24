@@ -45,6 +45,15 @@ const MAX_WEB_PAGE_CONTENT_CHARS = 50_000;
 const DEFAULT_WEB_PAGE_MIN_TEXT_CHARS = 220;
 const DEFAULT_WEB_PAGE_MIN_TEXT_DENSITY = 0.18;
 const DEFAULT_WEB_PAGE_MAX_LINK_DENSITY = 0.55;
+const DEFAULT_BROWSER_AUTOMATION_ENABLED = true;
+const DEFAULT_BROWSER_MAX_PAGES_PER_TASK = 3;
+const MAX_BROWSER_MAX_PAGES_PER_TASK = 5;
+const DEFAULT_BROWSER_MAX_LINKS_PER_PAGE = 20;
+const MAX_BROWSER_MAX_LINKS_PER_PAGE = 40;
+const DEFAULT_BROWSER_TEXT_MAX_CHARS = 12_000;
+const MAX_BROWSER_TEXT_MAX_CHARS = 50_000;
+const DEFAULT_BROWSER_TIMEOUT_MS = 15_000;
+const DEFAULT_BROWSER_ALLOW_SCREENSHOTS = false;
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:1420',
   'http://127.0.0.1:1420',
@@ -404,6 +413,54 @@ export function createAssemConfig(
             DEFAULT_WEB_PAGE_MAX_LINK_DENSITY
           )
         )
+      ),
+    browserAutomationEnabled:
+      overrides.browserAutomationEnabled ??
+      parseBoolean(
+        process.env.ASSEM_BROWSER_AUTOMATION_ENABLED,
+        DEFAULT_BROWSER_AUTOMATION_ENABLED
+      ),
+    browserMaxPagesPerTask:
+      clampInteger(
+        overrides.browserMaxPagesPerTask ??
+          parsePositiveInteger(
+            process.env.ASSEM_BROWSER_MAX_PAGES_PER_TASK,
+            DEFAULT_BROWSER_MAX_PAGES_PER_TASK
+          ),
+        1,
+        MAX_BROWSER_MAX_PAGES_PER_TASK
+      ),
+    browserMaxLinksPerPage:
+      clampInteger(
+        overrides.browserMaxLinksPerPage ??
+          parsePositiveInteger(
+            process.env.ASSEM_BROWSER_MAX_LINKS_PER_PAGE,
+            DEFAULT_BROWSER_MAX_LINKS_PER_PAGE
+          ),
+        1,
+        MAX_BROWSER_MAX_LINKS_PER_PAGE
+      ),
+    browserTextMaxChars:
+      clampInteger(
+        overrides.browserTextMaxChars ??
+          parsePositiveInteger(
+            process.env.ASSEM_BROWSER_TEXT_MAX_CHARS,
+            DEFAULT_BROWSER_TEXT_MAX_CHARS
+          ),
+        1_000,
+        MAX_BROWSER_TEXT_MAX_CHARS
+      ),
+    browserTimeoutMs:
+      overrides.browserTimeoutMs ??
+      parsePositiveInteger(
+        process.env.ASSEM_BROWSER_TIMEOUT_MS,
+        DEFAULT_BROWSER_TIMEOUT_MS
+      ),
+    browserAllowScreenshots:
+      overrides.browserAllowScreenshots ??
+      parseBoolean(
+        process.env.ASSEM_BROWSER_ALLOW_SCREENSHOTS,
+        DEFAULT_BROWSER_ALLOW_SCREENSHOTS
       ),
     allowedOrigins:
       overrides.allowedOrigins ??

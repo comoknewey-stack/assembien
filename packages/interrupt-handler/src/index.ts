@@ -1,4 +1,5 @@
 import type {
+  AssemTask,
   TaskInterruptClassification,
   TaskInterruptHandler,
   TaskInterruptRequest
@@ -39,6 +40,18 @@ function createClarification(
 export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
   classify(request: TaskInterruptRequest): TaskInterruptClassification {
     const normalized = normalizeIntentText(request.text);
+    const browserTask = this.isBrowserTask(request.activeTask);
+
+    const browserStatus = browserTask
+      ? this.classifyBrowserStatusQuery(normalized)
+      : null;
+    if (browserStatus) {
+      return {
+        kind: 'task_status_query',
+        matchedText: normalized,
+        statusQueryKind: browserStatus
+      };
+    }
 
     const status = this.classifyStatusQuery(normalized);
     if (status) {
@@ -70,6 +83,13 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
       };
     }
 
+    const browserRefinement = browserTask
+      ? this.classifyBrowserRefinement(normalized)
+      : null;
+    if (browserRefinement) {
+      return browserRefinement;
+    }
+
     const outputRefinement = this.classifyOutputRefinement(normalized);
     if (outputRefinement) {
       return {
@@ -88,6 +108,60 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
       kind: 'independent_query',
       matchedText: normalized
     };
+  }
+
+  private isBrowserTask(task: AssemTask | null | undefined): boolean {
+    return (
+      task?.plan?.taskType === 'browser_read_basic' ||
+      task?.metadata?.taskType === 'browser_read_basic' ||
+      Boolean(task?.metadata?.browser)
+    );
+  }
+
+  private classifyBrowserStatusQuery(
+    normalized: string
+  ): TaskInterruptClassification['statusQueryKind'] | null {
+    if (
+      /^(?:que pagina has abierto|que pagina abriste|que pagina has visitado|what page did you open|what page did you visit)$/.test(
+        normalized
+      )
+    ) {
+      return 'browser_page';
+    }
+
+    if (
+      /^(?:en que url estas|que url has abierto|que url visitas|cual es la url actual|what url are you on|what is the current url)$/.test(
+        normalized
+      )
+    ) {
+      return 'browser_url';
+    }
+
+    if (
+      /^(?:que enlaces viste|que links viste|saca los enlaces principales|cuales son los enlaces principales|what links did you see|what are the main links)$/.test(
+        normalized
+      )
+    ) {
+      return 'browser_links';
+    }
+
+    if (
+      /^(?:que has encontrado|que dice la pagina|que pone la pagina|resume la pagina|what did you find|what does the page say|summarize the page)$/.test(
+        normalized
+      )
+    ) {
+      return 'browser_findings';
+    }
+
+    if (
+      /^(?:que pasos has dado|que navegacion has hecho|que paginas has seguido|what steps did you take|what navigation did you do)$/.test(
+        normalized
+      )
+    ) {
+      return 'browser_navigation';
+    }
+
+    return null;
   }
 
   private classifyStatusQuery(
@@ -162,7 +236,7 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
     }
 
     if (
-      /^(?:por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|why did it fail|what happened|what was the error)$/.test(
+      /^(?:por que ha fallado|por que fallo|que ha pasado|que paso|cual fue el error|por que no pudiste abrir la web|por que no pudiste abrir la pagina|por que no pudiste abrirla|que error dio|que error dio la web|intentaste otra ruta|why did it fail|what happened|what was the error|why couldnt you open the page|did you try another route)$/.test(
         normalized
       )
     ) {
@@ -263,6 +337,70 @@ export class DeterministicTaskInterruptHandler implements TaskInterruptHandler {
       )
     ) {
       return 'evidence_sufficiency';
+    }
+
+    return null;
+  }
+
+  private classifyBrowserRefinement(
+    normalized: string
+  ): TaskInterruptClassification | null {
+    if (
+      /^(?:sigue el enlace mas relevante|follow the most relevant link)$/.test(
+        normalized
+      )
+    ) {
+      return {
+        kind: 'task_goal_refinement',
+        matchedText: normalized,
+        refinement: {
+          category: 'goal',
+          type: 'browser_follow_link',
+          instruction: normalized,
+          label: 'Seguir enlace mas relevante',
+          value: 'most_relevant'
+        }
+      };
+    }
+
+    const followMatch = /^(?:sigue(?:\s+el)?\s+enlace|follow(?:\s+the)?\s+link)\s+(.+)$/.exec(
+      normalized
+    );
+    const followTarget = extractTrimmedGroup(followMatch, 1);
+    if (followTarget) {
+      return {
+        kind: 'task_goal_refinement',
+        matchedText: normalized,
+        refinement: {
+          category: 'goal',
+          type: 'browser_follow_link',
+          instruction: normalized,
+          label: `Seguir enlace: ${followTarget}`,
+          value: followTarget
+        }
+      };
+    }
+
+    const findMatch =
+      /^(?:busca|encuentra|mira si menciona)\s+(.+?)(?:\s+en\s+(?:la\s+)?(?:pagina|web)|$)/.exec(
+        normalized
+      ) ??
+      /^(?:find|search for|check whether it mentions)\s+(.+?)(?:\s+on\s+(?:the\s+)?(?:page|site)|$)/.exec(
+        normalized
+      );
+    const findTarget = extractTrimmedGroup(findMatch, 1);
+    if (findTarget) {
+      return {
+        kind: 'task_goal_refinement',
+        matchedText: normalized,
+        refinement: {
+          category: 'goal',
+          type: 'browser_find_text',
+          instruction: normalized,
+          label: `Buscar en pagina: ${findTarget}`,
+          value: findTarget
+        }
+      };
     }
 
     return null;

@@ -10,6 +10,18 @@ import { FileTaskManager } from '@assem/task-manager';
 import { ToolRegistry } from '@assem/tool-registry';
 import type {
   AssemTask,
+  BrowserClickLinkInput,
+  BrowserClickLinkOutput,
+  BrowserFindOnPageInput,
+  BrowserFindOnPageOutput,
+  BrowserListVisibleLinksInput,
+  BrowserListVisibleLinksOutput,
+  BrowserOpenErrorType,
+  BrowserOpenPageInput,
+  BrowserOpenPageOutput,
+  BrowserPageLinkRecord,
+  BrowserPageReferenceInput,
+  BrowserPageSnapshot,
   MemoryBackend,
   ModelRequest,
   ModelResponse,
@@ -339,6 +351,278 @@ function createMockWebPageReaderTool(
   };
 }
 
+function createMockBrowserTools(options: {
+  failOnOpen?: boolean;
+  openErrorType?: BrowserOpenErrorType;
+  openErrorCause?: string;
+  openErrorMessage?: string;
+} = {}): Array<
+  ToolDefinition<
+    | BrowserOpenPageInput
+    | BrowserPageReferenceInput
+    | BrowserListVisibleLinksInput
+    | BrowserFindOnPageInput
+    | { pageId: string; maxChars: number }
+    | BrowserClickLinkInput,
+    | BrowserOpenPageOutput
+    | BrowserPageSnapshot
+    | BrowserListVisibleLinksOutput
+    | BrowserFindOnPageOutput
+    | { pageId: string; excerpt: string; contentLength: number }
+    | BrowserClickLinkOutput
+  >
+> {
+  const openedAt = new Date().toISOString();
+  const safeLink: BrowserPageLinkRecord = {
+    id: 'browser-link-1',
+    text: 'Official dataset',
+    url: 'https://example.com/dataset',
+    domain: 'example.com',
+    sameDomain: true,
+    externalDomain: false,
+    safety: 'safe_navigation'
+  };
+  const blockedLink: BrowserPageLinkRecord = {
+    id: 'browser-link-2',
+    text: 'Login',
+    url: 'https://example.com/login',
+    domain: 'example.com',
+    sameDomain: true,
+    externalDomain: false,
+    safety: 'requires_confirmation',
+    reason: 'sensitive_action_like_link'
+  };
+  const pageStart: BrowserPageSnapshot = {
+    pageId: 'page-start',
+    url: 'https://example.com/start',
+    finalUrl: 'https://example.com/start',
+    title: 'Example start',
+    openedAt,
+    lastUpdatedAt: openedAt,
+    snapshotSummary: 'Example start. Public dataset overview. 2 enlace(s) visible(s).',
+    visibleTextExcerpt:
+      'Public dataset overview with a direct mention of dataset availability.',
+    links: [safeLink, blockedLink],
+    status: options.failOnOpen ? 'error' : 'open',
+    safetyNotes: []
+  };
+  if (options.failOnOpen) {
+    const openErrorType = options.openErrorType ?? 'tls_error';
+    const openErrorMessage = options.openErrorMessage ?? 'fetch failed';
+    const openErrorCause =
+      options.openErrorCause ?? 'unable to verify the first certificate';
+    pageStart.snapshotSummary = `Pagina sin titulo. No se pudo abrir la pagina (${openErrorType}): ${openErrorMessage}.`;
+    pageStart.visibleTextExcerpt = '';
+    pageStart.links = [];
+    pageStart.errorMessage = openErrorMessage;
+    pageStart.transport = {
+      attemptedUrl: 'https://www.sodercan.es/',
+      finalUrl: 'https://www.sodercan.es/',
+      openAttemptedAt: openedAt,
+      openErrorType,
+      openErrorMessage,
+      openErrorCause,
+      fallbackAttempted: false,
+      fallbackSucceeded: false,
+      fallbackMode: 'none',
+      transportNotes: [
+        openErrorType === 'tls_error'
+          ? 'La apertura fallo en la validacion TLS/certificado del stack HTTP de Node.'
+          : 'La apertura fallo por un problema de transporte web.',
+        'No se intento fallback de solo lectura porque Browser Automation v1.1 no implementa una ruta segura adicional para este caso.'
+      ]
+    };
+  }
+  const pageDataset: BrowserPageSnapshot = {
+    pageId: 'page-dataset',
+    url: 'https://example.com/dataset',
+    finalUrl: 'https://example.com/dataset',
+    title: 'Dataset page',
+    openedAt,
+    lastUpdatedAt: openedAt,
+    snapshotSummary: 'Dataset page. Public statistics and methodology.',
+    visibleTextExcerpt:
+      'Public statistics, methodology notes and a direct reference to the dataset.',
+    links: [],
+    status: 'navigated',
+    safetyNotes: []
+  };
+  const pages = new Map<string, BrowserPageSnapshot>([
+    [pageStart.pageId, pageStart],
+    [pageDataset.pageId, pageDataset]
+  ]);
+
+  return [
+    {
+      id: 'browser-automation.open-page',
+      label: 'Mock browser open',
+      description: 'Opens a mocked browser page.',
+      riskLevel: 'low',
+      requiresConfirmation: false,
+      requiresPermissions: ['external_communication', 'read_only'],
+      async execute() {
+        return {
+          summary: `Opened ${pageStart.finalUrl}.`,
+          output: {
+            pageId: pageStart.pageId,
+            snapshot: pageStart
+          }
+        };
+      }
+    },
+    {
+      id: 'browser-automation.get-page-snapshot',
+      label: 'Mock browser snapshot',
+      description: 'Returns a mocked browser snapshot.',
+      riskLevel: 'low',
+      requiresConfirmation: false,
+      requiresPermissions: ['external_communication', 'read_only'],
+      async execute(input) {
+        const snapshot = pages.get((input as BrowserPageReferenceInput).pageId);
+        if (!snapshot) {
+          throw new Error('Unknown browser page.');
+        }
+        return {
+          summary: `Snapshot for ${snapshot.finalUrl}.`,
+          output: snapshot
+        };
+      }
+    },
+    {
+      id: 'browser-automation.extract-visible-text',
+      label: 'Mock browser text',
+      description: 'Returns mocked visible text.',
+      riskLevel: 'low',
+      requiresConfirmation: false,
+      requiresPermissions: ['external_communication', 'read_only'],
+      async execute(input) {
+        const pageId = (input as { pageId: string }).pageId;
+        const snapshot = pages.get(pageId);
+        if (!snapshot) {
+          throw new Error('Unknown browser page.');
+        }
+        return {
+          summary: `Extracted visible text for ${snapshot.finalUrl}.`,
+          output: {
+            pageId,
+            excerpt: snapshot.visibleTextExcerpt ?? '',
+            contentLength: (snapshot.visibleTextExcerpt ?? '').length
+          }
+        };
+      }
+    },
+    {
+      id: 'browser-automation.list-visible-links',
+      label: 'Mock browser links',
+      description: 'Returns mocked visible links.',
+      riskLevel: 'low',
+      requiresConfirmation: false,
+      requiresPermissions: ['external_communication', 'read_only'],
+      async execute(input) {
+        const pageId = (input as BrowserListVisibleLinksInput).pageId;
+        const snapshot = pages.get(pageId);
+        if (!snapshot) {
+          throw new Error('Unknown browser page.');
+        }
+        return {
+          summary: `Listed ${snapshot.links.length} link(s).`,
+          output: {
+            pageId,
+            links: snapshot.links
+          }
+        };
+      }
+    },
+    {
+      id: 'browser-automation.click-link',
+      label: 'Mock browser click',
+      description: 'Follows a mocked safe link.',
+      riskLevel: 'low',
+      requiresConfirmation: false,
+      requiresPermissions: ['external_communication', 'read_only'],
+      async execute(input) {
+        const { pageId, linkId } = input as BrowserClickLinkInput;
+        const snapshot = pages.get(pageId);
+        if (!snapshot) {
+          throw new Error('Unknown browser page.');
+        }
+        const link = snapshot.links.find((candidate) => candidate.id === linkId);
+        if (!link) {
+          throw new Error('Unknown browser link.');
+        }
+
+        if (link.safety !== 'safe_navigation') {
+          return {
+            summary: `Blocked navigation to ${link.url}.`,
+            output: {
+              pageId,
+              snapshot,
+              navigation: {
+                id: 'nav-blocked',
+                pageId,
+                action: 'navigate',
+                fromUrl: snapshot.finalUrl,
+                toUrl: link.url,
+                title: snapshot.title,
+                detail: link.text,
+                recordedAt: openedAt,
+                blocked: true,
+                reason: link.reason
+              }
+            }
+          };
+        }
+
+        return {
+          summary: `Navigated to ${pageDataset.finalUrl}.`,
+          output: {
+            pageId: pageDataset.pageId,
+            snapshot: pageDataset,
+            navigation: {
+              id: 'nav-safe',
+              pageId,
+              action: 'navigate',
+              fromUrl: snapshot.finalUrl,
+              toUrl: pageDataset.finalUrl,
+              title: pageDataset.title,
+              detail: link.text,
+              recordedAt: openedAt,
+              blocked: false
+            }
+          }
+        };
+      }
+    },
+    {
+      id: 'browser-automation.find-on-page',
+      label: 'Mock browser find',
+      description: 'Finds text in the mocked page.',
+      riskLevel: 'low',
+      requiresConfirmation: false,
+      requiresPermissions: ['external_communication', 'read_only'],
+      async execute(input) {
+        const { pageId, query } = input as BrowserFindOnPageInput;
+        const snapshot = pages.get(pageId);
+        if (!snapshot) {
+          throw new Error('Unknown browser page.');
+        }
+        const haystack = snapshot.visibleTextExcerpt ?? '';
+        const found = haystack.toLowerCase().includes(query.toLowerCase());
+        return {
+          summary: found ? `Found ${query}.` : `Did not find ${query}.`,
+          output: {
+            pageId,
+            query,
+            found,
+            matchCount: found ? 1 : 0,
+            excerpt: found ? haystack : undefined
+          }
+        };
+      }
+    }
+  ];
+}
+
 async function createRuntimeHarness(
   onRespond?: (request: ModelRequest) => Promise<ModelResponse> | ModelResponse,
   webSearchOverride?: Partial<WebSearchOutput> | Error,
@@ -346,6 +630,12 @@ async function createRuntimeHarness(
   runtimeOptions: {
     researchPageFetchEnabled?: boolean;
     researchPageFetchMaxSources?: number;
+    browserMockOptions?: {
+      failOnOpen?: boolean;
+      openErrorType?: BrowserOpenErrorType;
+      openErrorCause?: string;
+      openErrorMessage?: string;
+    };
   } = {}
 ) {
   const sandboxRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'assem-runtime-sandbox-'));
@@ -362,6 +652,9 @@ async function createRuntimeHarness(
   const toolRegistry = new ToolRegistry();
   toolRegistry.register(createMockWebSearchTool(webSearchOverride));
   toolRegistry.register(createMockWebPageReaderTool(pageReaderOverride));
+  for (const tool of createMockBrowserTools(runtimeOptions.browserMockOptions)) {
+    toolRegistry.register(tool);
+  }
   const runtime = new TaskRuntimeExecutor(
     {
       taskManager,
@@ -584,6 +877,152 @@ describe('TaskRuntimeExecutor', () => {
     expect(harness.events.map((event) => event.type)).toContain('task_step_started');
     expect(harness.events.map((event) => event.type)).toContain('task_step_completed');
     expect(harness.events.map((event) => event.type)).toContain('task_execution_completed');
+  });
+
+  it('executes browser_read_basic and writes grounded browser artifacts', async () => {
+    const harness = await createRuntimeHarness();
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'browser_read_basic',
+      objective: 'Revisar https://example.com/start y comprobar si menciona dataset'
+    });
+
+    const completedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'completed'
+    );
+
+    expect(completedTask.progressPercent).toBe(100);
+    expect(completedTask.artifacts.map((artifact) => artifact.label)).toEqual([
+      'Carpeta de trabajo',
+      'Notas del navegador',
+      'Snapshot de pagina',
+      'Log de navegacion'
+    ]);
+
+    const notesArtifact = completedTask.artifacts.find(
+      (artifact) => artifact.label === 'Notas del navegador'
+    );
+    const snapshotArtifact = completedTask.artifacts.find(
+      (artifact) => artifact.label === 'Snapshot de pagina'
+    );
+    const navigationArtifact = completedTask.artifacts.find(
+      (artifact) => artifact.label === 'Log de navegacion'
+    );
+
+    const notesContents = await fs.readFile(notesArtifact!.filePath!, 'utf8');
+    const snapshotContents = await fs.readFile(snapshotArtifact!.filePath!, 'utf8');
+    const navigationContents = await fs.readFile(navigationArtifact!.filePath!, 'utf8');
+
+    expect(notesContents).toContain('Dataset page');
+    expect(notesContents).toContain(
+      'Public statistics, methodology notes and a direct reference to the dataset.'
+    );
+    expect(JSON.parse(snapshotContents)).toMatchObject({
+      currentUrl: 'https://example.com/dataset'
+    });
+    expect(JSON.parse(navigationContents).navigationLog).toHaveLength(2);
+    expect(
+      (completedTask.metadata as { browser?: { findings?: string[] } }).browser?.findings
+    ).toContain(
+      'Pagina actual: Dataset page (https://example.com/dataset).'
+    );
+    expect(
+      (completedTask.metadata as { browser?: { findings?: string[] } }).browser?.findings
+    ).toContain(
+      'Resumen visible: Public statistics, methodology notes and a direct reference to the dataset.'
+    );
+  });
+
+  it('fails browser_read_basic when the initial page cannot be opened', async () => {
+    const harness = await createRuntimeHarness(
+      undefined,
+      undefined,
+      undefined,
+      {
+        browserMockOptions: {
+          failOnOpen: true,
+          openErrorType: 'tls_error',
+          openErrorMessage: 'fetch failed',
+          openErrorCause: 'unable to verify the first certificate'
+        }
+      }
+    );
+
+    const task = await harness.runtime.createTask({
+      sessionId: harness.sessionId,
+      taskType: 'browser_read_basic',
+      objective: 'Revisar https://www.sodercan.es/ y resumir su contenido visible'
+    });
+
+    const failedTask = await waitForTask(
+      harness.taskManager,
+      task.id,
+      (candidate) => candidate.status === 'failed'
+    );
+
+    expect(failedTask.failureReason).toContain('No se pudo abrir https://www.sodercan.es/');
+    expect(failedTask.failureReason).toContain('tipo=tls_error');
+    expect(failedTask.failureReason).toContain('unable to verify the first certificate');
+    expect(
+      (
+        failedTask.metadata as {
+          browser?: {
+            lastSnapshot?: {
+              status?: string;
+              errorMessage?: string;
+              transport?: {
+                openErrorType?: string;
+                openErrorCause?: string;
+                fallbackAttempted?: boolean;
+              };
+            };
+            openTransport?: {
+              openErrorType?: string;
+              openErrorCause?: string;
+              fallbackAttempted?: boolean;
+            };
+            transportNotes?: string[];
+          };
+        }
+      )
+        .browser?.lastSnapshot
+    ).toMatchObject({
+      status: 'error',
+      errorMessage: 'fetch failed',
+      transport: {
+        openErrorType: 'tls_error',
+        openErrorCause: 'unable to verify the first certificate',
+        fallbackAttempted: false
+      }
+    });
+    expect(
+      (
+        failedTask.metadata as {
+          browser?: {
+            openTransport?: { openErrorType?: string; openErrorCause?: string };
+            transportNotes?: string[];
+          };
+        }
+      ).browser?.openTransport
+    ).toMatchObject({
+      openErrorType: 'tls_error',
+      openErrorCause: 'unable to verify the first certificate'
+    });
+    expect(
+      (
+        failedTask.metadata as {
+          browser?: {
+            transportNotes?: string[];
+          };
+        }
+      ).browser?.transportNotes?.join(' ')
+    ).toContain('No se intento fallback de solo lectura');
+    expect(failedTask.artifacts.map((artifact) => artifact.label)).toEqual([
+      'Carpeta de trabajo'
+    ]);
   });
 
   it('can start a persisted pending task later through startTask', async () => {
